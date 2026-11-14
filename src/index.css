@@ -171,12 +171,12 @@
   display: none !important;
 }
 
-/* Sembunyikan tombol Share Screen bawaan LiveKit pada perangkat Mobile/HP (<= 768px) */
-@media (max-width: 768px) {
-  .lk-button[data-lk-source="screen_share"],
-  .lk-mobile-hide-screenshare {
-    display: none !important;
-  }
+/* Styling tambahan untuk tombol TrackToggle ScreenShare di Custom Control Bar */
+.lk-custom-screenshare-toggle.lk-button {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
 }
 
 /* Mode Hemat Bandwidth: Sembunyikan elemen video saat Voice-Only PTT diaktifkan */

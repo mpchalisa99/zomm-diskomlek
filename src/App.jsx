@@ -3,17 +3,21 @@
  * FILE FRONTEND: src/App.jsx
  * TACTICAL VIDCOMM DISKOMLEKAU — 100% PRODUCTION WEBRTC LIVEKIT & PWA
  *
- * Fitur Utama:
- * 1. Progressive Web App (PWA) & In-App Install Prompt:
- *    - Terintegrasi dengan `vite-plugin-pwa` (manifest `standalone`, theme `#0f172a`).
- *    - Dilengkapi hook `usePWAInstall()` & tombol "INSTALL VIDCOMM (PWA)" untuk
- *      memicu prompt Add to Home Screen langsung dari browser HP (Android Chrome & iOS Safari).
- * 2. Share Screen Khusus Desktop / Layar Besar (Desktop Only):
- *    - Mendeteksi perangkat melalui `window.innerWidth > 768` dan Mobile User-Agent.
- *    - Tombol "SHARE SCREEN" disembunyikan otomatis pada perangkat Mobile/HP agar
- *      prajurit di lapangan berfungsi sebagai Viewer Presentasi tanpa memicu error izin OS Android.
- *    - Tombol "SHARE SCREEN" ditampilkan penuh pada Desktop, Laptop, atau Tablet layar besar.
- * 3. Deep Link & QR Code Generator (Tanpa Instalasi) + Real-Time Chat (`useChat`).
+ * Pembaruan Fungsional:
+ * 1. Default State Lobby:
+ *    - Callsign default: "ANU"
+ *    - Nama Room default: "yes"
+ *    - Sandi Gabung default: "yes"
+ * 2. Fitur Share Screen (<TrackToggle source={Track.Source.ScreenShare} />):
+ *    - Menggunakan komponen resmi `<TrackToggle source={Track.Source.ScreenShare} />`
+ *      dari `@livekit/components-react` serta mendukung `<VideoConference />` bawaan
+ *      tanpa mematikan fungsi ScreenShare di level `<LiveKitRoom>`.
+ * 3. Fitur Pindah Kamera (Depan / Belakang) untuk Mobile & Multi-Cam:
+ *    - Tombol khusus "PINDAH KAMERA" di Control Bar dan melayang di pojok atas video.
+ *    - Menggunakan `useRoomContext()` & `useLocalParticipant()`, memanggil
+ *      `navigator.mediaDevices.enumerateDevices()` untuk mencari ID kamera depan (user)
+ *      dan belakang (environment), lalu mengeksekusi `room.switchActiveDevice('videoinput', targetDeviceId)`
+ *      tanpa memutus koneksi VTC.
  * ============================================================================
  */
 
@@ -22,12 +26,12 @@ import {
   LiveKitRoom,
   VideoConference,
   ConnectionQualityIndicator,
+  TrackToggle,
   useConnectionState,
   useRoomContext,
   useParticipants,
   useLocalParticipant,
   useChat,
-  useTrackToggle,
   ParticipantContextIfNeeded,
 } from '@livekit/components-react';
 import { ConnectionState, ConnectionQuality, Track } from 'livekit-client';
@@ -54,16 +58,18 @@ import {
   UserCheck,
   RefreshCw,
   MonitorUp,
-  MonitorOff,
   Download,
   Smartphone,
+  SwitchCamera,
 } from 'lucide-react';
 
+// 1. SETTING DEFAULT LOBBY (NILAI AWAL)
+const DEFAULT_CALLSIGN = 'ANU';
+const DEFAULT_ROOM_NAME = 'yes';
 const DEFAULT_SANDI = 'yes';
 
 /**
  * Generator Callsign Acak Otomatis untuk Prajurit yang Join via Deep Link QR
- * Contoh output: "PERSONEL-45"
  */
 function generateRandomCallsign() {
   const randomNumber = Math.floor(10 + Math.random() * 90);
@@ -72,50 +78,7 @@ function generateRandomCallsign() {
 
 /**
  * ============================================================================
- * HOOK 1: DETEKSI PERANGKAT DESKTOP / LAYAR BESAR UNTUK FITUR SHARE SCREEN
- * Menyembunyikan tombol Share Screen pada HP/Mobile (`window.innerWidth <= 768`
- * atau Mobile Phone User-Agent) agar tidak memicu error izin layar di Android/iOS.
- * ============================================================================
- */
-function useCanShareScreen() {
-  const [canShareScreen, setCanShareScreen] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    const ua = window.navigator.userAgent || '';
-    const isMobilePhoneUA =
-      /Android.*Mobile|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
-    const hasDisplayMediaSupport =
-      typeof navigator !== 'undefined' &&
-      !!navigator.mediaDevices &&
-      typeof navigator.mediaDevices.getDisplayMedia === 'function';
-    return window.innerWidth > 768 && !isMobilePhoneUA && hasDisplayMediaSupport;
-  });
-
-  useEffect(() => {
-    const evaluateDevice = () => {
-      const ua = window.navigator.userAgent || '';
-      const isMobilePhoneUA =
-        /Android.*Mobile|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
-      const hasDisplayMediaSupport =
-        typeof navigator !== 'undefined' &&
-        !!navigator.mediaDevices &&
-        typeof navigator.mediaDevices.getDisplayMedia === 'function';
-      setCanShareScreen(
-        window.innerWidth > 768 && !isMobilePhoneUA && hasDisplayMediaSupport
-      );
-    };
-
-    evaluateDevice();
-    window.addEventListener('resize', evaluateDevice);
-    return () => window.removeEventListener('resize', evaluateDevice);
-  }, []);
-
-  return canShareScreen;
-}
-
-/**
- * ============================================================================
- * HOOK 2: PWA INSTALL PROMPT (`beforeinstallprompt` & Standalone Detector)
- * Memungkinkan prajurit meng-install aplikasi langsung dari browser HP ke Home Screen
+ * HOOK: PWA INSTALL PROMPT (`beforeinstallprompt` & Standalone Detector)
  * ============================================================================
  */
 function usePWAInstall() {
@@ -174,13 +137,12 @@ function usePWAInstall() {
 }
 
 /**
- * Komponen Tombol Install PWA (Add to Home Screen) + Panduan Install HP
+ * Komponen Tombol Install PWA (Add to Home Screen)
  */
 function PWAInstallButton({ compact = false }) {
   const { isInstallable, isInstalled, isIOS, triggerInstall } = usePWAInstall();
   const [showGuideModal, setShowGuideModal] = useState(false);
 
-  // Sembunyikan tombol jika aplikasi sudah berjalan dalam mode Standalone (sudah di-install)
   if (isInstalled) return null;
 
   const handleClick = async () => {
@@ -237,7 +199,8 @@ function PWAInstallButton({ compact = false }) {
                     Ketuk ikon <strong>Share (Bagikan)</strong> di bilah bawah browser Safari.
                   </li>
                   <li>
-                    Gulir ke bawah lalu pilih <strong>&quot;Add to Home Screen&quot; (Tambah ke Layar Utama)</strong>.
+                    Gulir ke bawah lalu pilih{' '}
+                    <strong>&quot;Add to Home Screen&quot; (Tambah ke Layar Utama)</strong>.
                   </li>
                   <li>
                     Ketuk <strong>Add (Tambah)</strong> di pojok kanan atas.
@@ -340,7 +303,6 @@ function LiveKitHeaderHUD({ roomName, participantName, lowBandwidthMode, onOpenQ
 
   return (
     <header className="shrink-0 bg-slate-900/95 border-b border-sky-300/30 px-3 py-2 sm:px-5 flex flex-wrap items-center justify-between gap-2 z-30">
-      {/* Kiri: Identitas Aplikasi & Status Room */}
       <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
         <TacticalRadarLogo className="w-8 h-8 sm:w-9 sm:h-9 shrink-0" />
         <div className="min-w-0">
@@ -367,7 +329,6 @@ function LiveKitHeaderHUD({ roomName, participantName, lowBandwidthMode, onOpenQ
         </div>
       </div>
 
-      {/* Kanan: Real LiveKit ConnectionState, ConnectionQualityIndicator & PWA Install */}
       <div className="flex items-center gap-2 ml-auto shrink-0">
         <PWAInstallButton compact={true} />
 
@@ -427,7 +388,6 @@ function LiveKitHeaderHUD({ roomName, participantName, lowBandwidthMode, onOpenQ
 /**
  * ============================================================================
  * KOMPONEN REAL-TIME CHAT PANEL (DI ATAS GRID VIDEO)
- * Menggunakan hook `useChat()` resmi dari `@livekit/components-react`
  * ============================================================================
  */
 function RealTimeChatOverlay({ isOpen, onClose, localCallsign, onUnreadChange }) {
@@ -630,8 +590,11 @@ function RealTimeParticipantsModal({ isOpen, onClose, roomName }) {
 /**
  * ============================================================================
  * WORKSPACE UTAMA DI DALAM <LiveKitRoom> (STATE: IN_CALL)
- * - Share Screen HANYA dirender pada Desktop / Laptop / Layar Besar (`canShareScreen`).
- * - Pada perangkat Mobile/HP, tombol Share Screen disembunyikan otomatis.
+ * Memuat:
+ * - <VideoConference /> bawaan LiveKit
+ * - Tombol "PINDAH KAMERA" (Depan/Belakang) dengan `navigator.mediaDevices.enumerateDevices()`
+ *   dan `room.switchActiveDevice('videoinput', targetDeviceId)`
+ * - Komponen `<TrackToggle source={Track.Source.ScreenShare} />` untuk Share Screen
  * ============================================================================
  */
 function InCallWorkspace({
@@ -644,19 +607,16 @@ function InCallWorkspace({
 }) {
   const room = useRoomContext();
   const participants = useParticipants();
-  const canShareScreen = useCanShareScreen();
-
-  // Hook resmi LiveKit untuk tombol SHARE SCREEN (Track.Source.ScreenShare)
-  const {
-    buttonProps: screenShareButtonProps,
-    enabled: isScreenSharing,
-  } = useTrackToggle({
-    source: Track.Source.ScreenShare,
-  });
+  const { localParticipant, isCameraEnabled } = useLocalParticipant();
 
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [showParticipantsModal, setShowParticipantsModal] = useState(false);
+
+  // State untuk fitur Pindah Kamera (Depan / Belakang)
+  const [activeCameraId, setActiveCameraId] = useState('');
+  const [cameraFacingMode, setCameraFacingMode] = useState('user'); // 'user' (depan) | 'environment' (belakang)
+  const [isSwitchingCamera, setIsSwitchingCamera] = useState(false);
 
   // Sinkronisasi Mode Hemat Bandwidth ke track kamera & video remote
   useEffect(() => {
@@ -675,6 +635,83 @@ function InCallWorkspace({
     }
   }, [room, lowBandwidthMode]);
 
+  /**
+   * 3. FUNGSI PINDAH KAMERA (DEPAN / BELAKANG)
+   * Menggunakan `navigator.mediaDevices.enumerateDevices()` untuk mencari ID kamera
+   * depan (user/front) dan kamera belakang (environment/back), lalu memanggil
+   * `room.switchActiveDevice('videoinput', targetDeviceId)` tanpa memutus koneksi VTC.
+   */
+  const handleSwitchCamera = useCallback(async () => {
+    if (!room || isSwitchingCamera) return;
+    setIsSwitchingCamera(true);
+
+    try {
+      // Pastikan kamera aktif terlebih dahulu jika sebelumnya dimatikan
+      if (!isCameraEnabled && localParticipant) {
+        await localParticipant.setCameraEnabled(true);
+      }
+
+      const nextFacing = cameraFacingMode === 'user' ? 'environment' : 'user';
+      const allDevices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = allDevices.filter((d) => d.kind === 'videoinput');
+
+      if (videoInputs.length > 1) {
+        // Cari kamera berdasarkan label depan (front/user) atau belakang (back/rear/environment)
+        const targetByLabel = videoInputs.find((device) => {
+          const label = (device.label || '').toLowerCase();
+          if (nextFacing === 'environment') {
+            return (
+              label.includes('back') ||
+              label.includes('rear') ||
+              label.includes('environment') ||
+              label.includes('belakang')
+            );
+          }
+          return (
+            label.includes('front') ||
+            label.includes('user') ||
+            label.includes('facetime') ||
+            label.includes('depan')
+          );
+        });
+
+        // Ambil deviceId saat ini dari track kamera lokal jika tersedia
+        const currentCamPub = localParticipant?.getTrackPublication(Track.Source.Camera);
+        const currentSettingsDeviceId =
+          currentCamPub?.track?.mediaStreamTrack?.getSettings?.()?.deviceId || activeCameraId;
+
+        let targetDevice = targetByLabel;
+
+        // Jika label tidak spesifik atau sama dengan kamera aktif sekarang, putar ke kamera berikutnya di daftar
+        if (!targetDevice || targetDevice.deviceId === currentSettingsDeviceId) {
+          const currentIndex = videoInputs.findIndex(
+            (d) => d.deviceId === currentSettingsDeviceId
+          );
+          const nextIndex = (currentIndex + 1) % videoInputs.length;
+          targetDevice = videoInputs[nextIndex];
+        }
+
+        if (targetDevice && targetDevice.deviceId) {
+          await room.switchActiveDevice('videoinput', targetDevice.deviceId);
+          setActiveCameraId(targetDevice.deviceId);
+          setCameraFacingMode(nextFacing);
+          return;
+        }
+      }
+
+      // Fallback untuk browser Mobile yang menyembunyikan daftar deviceId: restartTrack dengan facingMode
+      const camPub = localParticipant?.getTrackPublication(Track.Source.Camera);
+      if (camPub?.track && typeof camPub.track.restartTrack === 'function') {
+        await camPub.track.restartTrack({ facingMode: nextFacing });
+        setCameraFacingMode(nextFacing);
+      }
+    } catch (err) {
+      console.error('Gagal menukar kamera (switchActiveDevice):', err);
+    } finally {
+      setIsSwitchingCamera(false);
+    }
+  }, [room, localParticipant, isCameraEnabled, cameraFacingMode, activeCameraId, isSwitchingCamera]);
+
   return (
     <div className="flex flex-col h-full w-full overflow-hidden">
       {/* 1. HEADER ATAS DENGAN INDIKATOR JARINGAN REAL-TIME */}
@@ -685,10 +722,30 @@ function InCallWorkspace({
         onOpenQrModal={onOpenQrModal}
       />
 
-      {/* 2. AREA TENGAH: <VideoConference /> + HUD TAKTIS OVERLAY + PANEL CHAT */}
+      {/* 2. AREA TENGAH: <VideoConference /> + TOMBOL MELAYANG PINDAH KAMERA + HUD OVERLAY + CHAT */}
       <div className="flex-1 min-h-0 w-full relative overflow-hidden bg-slate-900">
-        {/* Komponen <VideoConference /> resmi LiveKit (Otomatis Pin Layar Presentasi Share Screen) */}
+        {/* Komponen <VideoConference /> bawaan LiveKit (lengkap dengan ControlBar & fokus Share Screen) */}
         <VideoConference />
+
+        {/* TOMBOL MELAYANG "PINDAH KAMERA" DI POJOK KANAN ATAS VIDEO (Mudah Dijangkau di HP) */}
+        <div className="absolute top-12 right-3 sm:top-14 sm:right-5 z-30 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleSwitchCamera}
+            disabled={isSwitchingCamera}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-950/90 hover:bg-blue-900 active:scale-95 border border-sky-300/60 text-sky-200 shadow-[0_4px_20px_rgba(2,132,199,0.35)] text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer disabled:opacity-50"
+            title="Pindah Kamera Depan / Belakang (room.switchActiveDevice)"
+          >
+            <SwitchCamera
+              className={`w-4 h-4 text-cyan-300 shrink-0 ${
+                isSwitchingCamera ? 'animate-spin' : ''
+              }`}
+            />
+            <span>
+              PINDAH KAMERA ({cameraFacingMode === 'user' ? 'DEPAN' : 'BELAKANG'})
+            </span>
+          </button>
+        </div>
 
         {/* HUD "CONFIDENTIAL - DISKOMLEKAU" bergaya overlay taktis (pointer-events-none, absolute) */}
         <div className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between p-3 sm:p-5 overflow-hidden">
@@ -749,10 +806,9 @@ function InCallWorkspace({
         />
       </div>
 
-      {/* 3. CUSTOM TACTICAL CONTROL BAR (SHARE SCREEN DESKTOP ONLY, CHAT, PERSONEL, HEMAT DATA, KELUAR) */}
+      {/* 3. CUSTOM TACTICAL CONTROL BAR DENGAN <TrackToggle source={Track.Source.ScreenShare} /> & PINDAH KAMERA */}
       <div className="shrink-0 bg-blue-950/95 border-t border-sky-300/35 px-2.5 py-2 sm:px-5 flex items-center justify-between gap-2 z-30">
-        {/* Info Room & Callsign di Kiri */}
-        <div className="hidden lg:flex items-center gap-2 text-xs text-sky-200">
+        <div className="hidden xl:flex items-center gap-2 text-xs text-sky-200">
           <span className="px-2.5 py-1 rounded-md bg-slate-900/90 border border-sky-300/30">
             ROOM: <strong className="text-sky-300">{roomName}</strong>
           </span>
@@ -761,35 +817,35 @@ function InCallWorkspace({
           </span>
         </div>
 
-        {/* Deretan Tombol Utama Rapat Koordinasi */}
-        <div className="flex items-center justify-between lg:justify-end gap-1.5 sm:gap-2 w-full lg:w-auto">
-          {/* TOMBOL SHARE SCREEN — HANYA TAMPIL DI DESKTOP / LAPTOP / LAYAR BESAR (> 768px) */}
-          {canShareScreen && (
-            <button
-              type="button"
-              onClick={screenShareButtonProps.onClick}
-              disabled={screenShareButtonProps.disabled}
-              className={`flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3.5 rounded-lg border text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer flex-1 lg:flex-initial ${
-                isScreenSharing
-                  ? 'bg-cyan-300 text-slate-950 border-cyan-200 shadow-[0_0_16px_rgba(103,232,249,0.45)]'
-                  : 'bg-slate-900 hover:bg-slate-800 text-sky-300 border-sky-300/45'
-              }`}
-              title="Bagikan Layar Presentasi Rapat (Khusus Desktop / Laptop)"
-            >
-              {isScreenSharing ? (
-                <MonitorOff className="w-4 h-4 shrink-0" />
-              ) : (
-                <MonitorUp className="w-4 h-4 shrink-0" />
-              )}
-              <span>{isScreenSharing ? 'STOP SHARE' : 'SHARE SCREEN'}</span>
-            </button>
-          )}
+        <div className="flex items-center justify-between xl:justify-end gap-1.5 sm:gap-2 w-full xl:w-auto overflow-x-auto no-scrollbar">
+          {/* 2. KOMPONEN RESMI <TrackToggle source={Track.Source.ScreenShare} /> DARI LIVEKIT */}
+          <TrackToggle
+            source={Track.Source.ScreenShare}
+            showIcon={true}
+            className="lk-custom-screenshare-toggle flex items-center justify-center gap-1.5 !px-2.5 !py-2 sm:!px-3.5 !rounded-lg !border !border-sky-300/45 !bg-slate-900 hover:!bg-slate-800 !text-sky-300 !text-[10px] sm:!text-xs !font-bold !tracking-wider !uppercase transition-all cursor-pointer shrink-0"
+          >
+            <span>SHARE SCREEN</span>
+          </TrackToggle>
+
+          {/* 3. TOMBOL PINDAH KAMERA (DEPAN / BELAKANG) DI CONTROL BAR */}
+          <button
+            type="button"
+            onClick={handleSwitchCamera}
+            disabled={isSwitchingCamera}
+            className="flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3.5 rounded-lg border border-cyan-300/50 bg-slate-900 hover:bg-slate-800 text-cyan-300 text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 disabled:opacity-50"
+            title="Tukar Kamera Depan (User) / Belakang (Environment)"
+          >
+            <SwitchCamera
+              className={`w-4 h-4 shrink-0 ${isSwitchingCamera ? 'animate-spin' : ''}`}
+            />
+            <span>PINDAH KAMERA</span>
+          </button>
 
           {/* TOMBOL CHAT REAL-TIME */}
           <button
             type="button"
             onClick={() => setIsChatOpen((prev) => !prev)}
-            className={`relative flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3.5 rounded-lg border text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer flex-1 lg:flex-initial ${
+            className={`relative flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3.5 rounded-lg border text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 ${
               isChatOpen
                 ? 'bg-sky-300 text-slate-950 border-sky-200 shadow-[0_0_16px_rgba(125,211,252,0.45)]'
                 : 'bg-slate-900 hover:bg-slate-800 text-sky-300 border-sky-300/45'
@@ -809,7 +865,7 @@ function InCallWorkspace({
           <button
             type="button"
             onClick={() => setShowParticipantsModal(true)}
-            className="flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3.5 rounded-lg border border-sky-300/40 bg-slate-900 hover:bg-slate-800 text-sky-200 text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-colors cursor-pointer flex-1 lg:flex-initial"
+            className="flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3.5 rounded-lg border border-sky-300/40 bg-slate-900 hover:bg-slate-800 text-sky-200 text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-colors cursor-pointer shrink-0"
           >
             <Users className="w-4 h-4 text-sky-300 shrink-0" />
             <span>PERSONEL ({participants.length})</span>
@@ -819,7 +875,7 @@ function InCallWorkspace({
           <button
             type="button"
             onClick={() => onToggleLowBandwidth(!lowBandwidthMode)}
-            className={`hidden sm:flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-bold tracking-wider uppercase transition-all cursor-pointer ${
+            className={`hidden sm:flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 ${
               lowBandwidthMode
                 ? 'bg-amber-400 text-slate-950 border-amber-200'
                 : 'bg-slate-900 hover:bg-slate-800 text-sky-200 border-sky-300/40'
@@ -858,8 +914,9 @@ function InCallWorkspace({
 export default function App() {
   const [appState, setAppState] = useState('LOBBY');
 
-  const [participantName, setParticipantName] = useState('KOMANDAN-01');
-  const [roomName, setRoomName] = useState('OPS-GARUDA-01');
+  // 1. SETTING DEFAULT LOBBY: Callsign = "ANU", Room = "yes", Sandi = "yes"
+  const [participantName, setParticipantName] = useState(DEFAULT_CALLSIGN);
+  const [roomName, setRoomName] = useState(DEFAULT_ROOM_NAME);
   const [sandi, setSandi] = useState(DEFAULT_SANDI);
   const [customServerUrl, setCustomServerUrl] = useState(
     import.meta.env.VITE_LIVEKIT_URL || ''
@@ -876,7 +933,7 @@ export default function App() {
   const [showQrModal, setShowQrModal] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
-  const cleanRoomParam = (roomName || 'OPS-GARUDA-01').trim().toUpperCase();
+  const cleanRoomParam = (roomName || DEFAULT_ROOM_NAME).trim();
   const cleanSandiParam = (sandi || DEFAULT_SANDI).trim();
   const deepLinkUrl =
     typeof window !== 'undefined'
@@ -892,8 +949,8 @@ export default function App() {
   const requestTokenAndJoin = useCallback(
     async (targetRoom, targetCallsign, targetSandi) => {
       setErrorMsg('');
-      const finalRoom = String(targetRoom || '').trim().toUpperCase();
-      const finalCallsign = String(targetCallsign || '').trim().toUpperCase();
+      const finalRoom = String(targetRoom || '').trim();
+      const finalCallsign = String(targetCallsign || '').trim();
       const finalSandi = String(targetSandi ?? '').trim();
 
       if (!finalRoom || !finalCallsign) {
@@ -954,7 +1011,7 @@ export default function App() {
     [customServerUrl]
   );
 
-  // Deteksi Deep Link Join via URLSearchParams (?room=OPS-GARUDA-01&sandi=yes)
+  // Deteksi Deep Link Join via URLSearchParams (?room=yes&sandi=yes)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
@@ -964,10 +1021,10 @@ export default function App() {
 
     if (roomFromUrl && sandiFromUrl) {
       const autoCallsign = callsignFromUrl
-        ? callsignFromUrl.trim().toUpperCase()
+        ? callsignFromUrl.trim()
         : generateRandomCallsign();
 
-      setRoomName(roomFromUrl.trim().toUpperCase());
+      setRoomName(roomFromUrl.trim());
       setSandi(sandiFromUrl.trim());
       setParticipantName(autoCallsign);
       setIsDeepLinkJoining(true);
@@ -1088,10 +1145,10 @@ export default function App() {
                     type="text"
                     required
                     value={participantName}
-                    onChange={(e) => setParticipantName(e.target.value.toUpperCase())}
-                    placeholder="CONTOH: KOMANDAN-01 / PERSONEL-45"
+                    onChange={(e) => setParticipantName(e.target.value)}
+                    placeholder="ANU"
                     autoComplete="off"
-                    className="w-full px-3.5 py-2.5 text-sm font-bold tracking-wider uppercase bg-blue-950/80 border border-sky-300/45 rounded-lg text-sky-200 placeholder-slate-500 focus:outline-none focus:border-cyan-300"
+                    className="w-full px-3.5 py-2.5 text-sm font-bold tracking-wider bg-blue-950/80 border border-sky-300/45 rounded-lg text-sky-200 placeholder-slate-500 focus:outline-none focus:border-cyan-300"
                   />
                 </div>
 
@@ -1108,10 +1165,10 @@ export default function App() {
                       type="text"
                       required
                       value={roomName}
-                      onChange={(e) => setRoomName(e.target.value.toUpperCase())}
-                      placeholder="OPS-GARUDA-01"
+                      onChange={(e) => setRoomName(e.target.value)}
+                      placeholder="yes"
                       autoComplete="off"
-                      className="w-full px-3.5 py-2.5 text-sm font-bold tracking-wider uppercase bg-blue-950/80 border border-sky-300/45 rounded-lg text-cyan-300 placeholder-slate-500 focus:outline-none focus:border-cyan-300"
+                      className="w-full px-3.5 py-2.5 text-sm font-bold tracking-wider bg-blue-950/80 border border-sky-300/45 rounded-lg text-cyan-300 placeholder-slate-500 focus:outline-none focus:border-cyan-300"
                     />
                   </div>
 

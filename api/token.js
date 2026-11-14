@@ -61,8 +61,8 @@ export default async function handler(req, res) {
       });
     }
 
-    const cleanRoom = String(roomName).trim().toUpperCase();
-    const cleanIdentity = String(participantName).trim().toUpperCase();
+    const cleanRoom = String(roomName).trim();
+    const cleanIdentity = String(participantName).trim();
 
     const at = new AccessToken(apiKey, apiSecret, {
       identity: cleanIdentity,
