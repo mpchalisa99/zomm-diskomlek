@@ -171,6 +171,14 @@
   display: none !important;
 }
 
+/* Sembunyikan tombol Share Screen bawaan LiveKit pada perangkat Mobile/HP (<= 768px) */
+@media (max-width: 768px) {
+  .lk-button[data-lk-source="screen_share"],
+  .lk-mobile-hide-screenshare {
+    display: none !important;
+  }
+}
+
 /* Mode Hemat Bandwidth: Sembunyikan elemen video saat Voice-Only PTT diaktifkan */
 .low-bandwidth-active .lk-participant-tile video {
   opacity: 0 !important;

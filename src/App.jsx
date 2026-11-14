@@ -1,24 +1,19 @@
 /**
  * ============================================================================
  * FILE FRONTEND: src/App.jsx
- * TACTICAL VIDCOMM DISKOMLEKAU — 100% PRODUCTION WEBRTC LIVEKIT APPLICATION
+ * TACTICAL VIDCOMM DISKOMLEKAU — 100% PRODUCTION WEBRTC LIVEKIT & PWA
  *
- * Fitur Utama (100% Real LiveKit SDK):
- * 1. Tema "Elegant Light Blue" & Full Screen Fit:
- *    Dibungkus dengan `flex flex-col h-[100dvh] w-full overflow-hidden font-mono`
- *    dengan warna latar `bg-slate-900` / `bg-blue-950` dan aksen `sky-300`, `blue-400`, `cyan-300`.
- * 2. Deep Link & QR Code Generator (Tanpa Instalasi):
- *    - Membaca `new URLSearchParams(window.location.search)` untuk parameter `room` dan `sandi`.
- *    - Jika ditemukan, otomatis bypass LOBBY, generate callsign acak (contoh: "PERSONEL-45"),
- *      panggil `fetch('/api/token')`, dan langsung masuk ke state `IN_CALL`.
- *    - Tombol "TAMPILKAN QR UNDANGAN" di LOBBY & IN_CALL merender tag `<img>` dari API QR
- *      `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=...`
- * 3. Fitur Share Screen & Real-Time Chat (Rapat Koordinasi):
- *    - Menggunakan `<VideoConference />` bawaan `@livekit/components-react` yang otomatis
- *      membesarkan (focus/pin) layar presentasi saat peserta melakukan Share Screen.
- *    - Tombol eksplisit "SHARE SCREEN" menggunakan `Track.Source.ScreenShare` (`useTrackToggle` / `localParticipant.setScreenShareEnabled`).
- *    - Panel "CHAT" real-time berbasis WebRTC Data Channel (`useChat`) di atas grid video.
- *    - HUD Overlay Taktis "CONFIDENTIAL - DISKOMLEKAU" (`pointer-events-none absolute`).
+ * Fitur Utama:
+ * 1. Progressive Web App (PWA) & In-App Install Prompt:
+ *    - Terintegrasi dengan `vite-plugin-pwa` (manifest `standalone`, theme `#0f172a`).
+ *    - Dilengkapi hook `usePWAInstall()` & tombol "INSTALL VIDCOMM (PWA)" untuk
+ *      memicu prompt Add to Home Screen langsung dari browser HP (Android Chrome & iOS Safari).
+ * 2. Share Screen Khusus Desktop / Layar Besar (Desktop Only):
+ *    - Mendeteksi perangkat melalui `window.innerWidth > 768` dan Mobile User-Agent.
+ *    - Tombol "SHARE SCREEN" disembunyikan otomatis pada perangkat Mobile/HP agar
+ *      prajurit di lapangan berfungsi sebagai Viewer Presentasi tanpa memicu error izin OS Android.
+ *    - Tombol "SHARE SCREEN" ditampilkan penuh pada Desktop, Laptop, atau Tablet layar besar.
+ * 3. Deep Link & QR Code Generator (Tanpa Instalasi) + Real-Time Chat (`useChat`).
  * ============================================================================
  */
 
@@ -60,6 +55,8 @@ import {
   RefreshCw,
   MonitorUp,
   MonitorOff,
+  Download,
+  Smartphone,
 } from 'lucide-react';
 
 const DEFAULT_SANDI = 'yes';
@@ -71,6 +68,212 @@ const DEFAULT_SANDI = 'yes';
 function generateRandomCallsign() {
   const randomNumber = Math.floor(10 + Math.random() * 90);
   return `PERSONEL-${randomNumber}`;
+}
+
+/**
+ * ============================================================================
+ * HOOK 1: DETEKSI PERANGKAT DESKTOP / LAYAR BESAR UNTUK FITUR SHARE SCREEN
+ * Menyembunyikan tombol Share Screen pada HP/Mobile (`window.innerWidth <= 768`
+ * atau Mobile Phone User-Agent) agar tidak memicu error izin layar di Android/iOS.
+ * ============================================================================
+ */
+function useCanShareScreen() {
+  const [canShareScreen, setCanShareScreen] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const ua = window.navigator.userAgent || '';
+    const isMobilePhoneUA =
+      /Android.*Mobile|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+    const hasDisplayMediaSupport =
+      typeof navigator !== 'undefined' &&
+      !!navigator.mediaDevices &&
+      typeof navigator.mediaDevices.getDisplayMedia === 'function';
+    return window.innerWidth > 768 && !isMobilePhoneUA && hasDisplayMediaSupport;
+  });
+
+  useEffect(() => {
+    const evaluateDevice = () => {
+      const ua = window.navigator.userAgent || '';
+      const isMobilePhoneUA =
+        /Android.*Mobile|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+      const hasDisplayMediaSupport =
+        typeof navigator !== 'undefined' &&
+        !!navigator.mediaDevices &&
+        typeof navigator.mediaDevices.getDisplayMedia === 'function';
+      setCanShareScreen(
+        window.innerWidth > 768 && !isMobilePhoneUA && hasDisplayMediaSupport
+      );
+    };
+
+    evaluateDevice();
+    window.addEventListener('resize', evaluateDevice);
+    return () => window.removeEventListener('resize', evaluateDevice);
+  }, []);
+
+  return canShareScreen;
+}
+
+/**
+ * ============================================================================
+ * HOOK 2: PWA INSTALL PROMPT (`beforeinstallprompt` & Standalone Detector)
+ * Memungkinkan prajurit meng-install aplikasi langsung dari browser HP ke Home Screen
+ * ============================================================================
+ */
+function usePWAInstall() {
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [isInstalled, setIsInstalled] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true;
+    setIsInstalled(isStandalone);
+
+    const ua = window.navigator.userAgent.toLowerCase();
+    setIsIOS(/iphone|ipad|ipod/.test(ua));
+
+    const handleBeforeInstallPrompt = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    const handleAppInstalled = () => {
+      setIsInstalled(true);
+      setDeferredPrompt(null);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  const triggerInstall = async () => {
+    if (!deferredPrompt) return false;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setIsInstalled(true);
+      setDeferredPrompt(null);
+      return true;
+    }
+    return false;
+  };
+
+  return {
+    isInstallable: !!deferredPrompt,
+    isInstalled,
+    isIOS,
+    triggerInstall,
+  };
+}
+
+/**
+ * Komponen Tombol Install PWA (Add to Home Screen) + Panduan Install HP
+ */
+function PWAInstallButton({ compact = false }) {
+  const { isInstallable, isInstalled, isIOS, triggerInstall } = usePWAInstall();
+  const [showGuideModal, setShowGuideModal] = useState(false);
+
+  // Sembunyikan tombol jika aplikasi sudah berjalan dalam mode Standalone (sudah di-install)
+  if (isInstalled) return null;
+
+  const handleClick = async () => {
+    if (isInstallable) {
+      await triggerInstall();
+    } else {
+      setShowGuideModal(true);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={handleClick}
+        className={`rounded-lg bg-cyan-400/20 hover:bg-cyan-400/30 border border-cyan-300/60 text-cyan-200 font-bold tracking-wider uppercase flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+          compact ? 'px-2.5 py-1 text-[10px] sm:text-xs' : 'px-3 py-1.5 text-xs'
+        }`}
+        title="Install TACTICAL VIDCOMM ke Layar Utama HP (PWA Standalone)"
+      >
+        <Download className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
+        <span>{compact ? 'INSTALL APP' : 'INSTALL KE HP (PWA)'}</span>
+      </button>
+
+      {showGuideModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-slate-900 border border-sky-300/50 rounded-2xl p-5 shadow-[0_0_40px_rgba(56,189,248,0.25)] text-left space-y-3.5">
+            <div className="flex items-center justify-between border-b border-sky-300/25 pb-2.5">
+              <div className="flex items-center gap-2">
+                <Smartphone className="w-5 h-5 text-cyan-300" />
+                <div>
+                  <h3 className="text-xs sm:text-sm font-bold text-sky-300 uppercase">
+                    INSTALL VIDCOMM KE LAYAR HP
+                  </h3>
+                  <p className="text-[10px] text-cyan-300">
+                    MODE STANDALONE FULLSCREEN (TANPA PLAY STORE)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowGuideModal(false)}
+                className="p-1 rounded-lg bg-blue-950 border border-sky-300/30 text-sky-300 hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {isIOS ? (
+              <div className="space-y-2 text-xs text-sky-100 leading-relaxed">
+                <p className="font-bold text-cyan-300">Panduan iPhone / iPad (Safari):</p>
+                <ol className="list-decimal list-inside space-y-1.5 text-slate-300">
+                  <li>
+                    Ketuk ikon <strong>Share (Bagikan)</strong> di bilah bawah browser Safari.
+                  </li>
+                  <li>
+                    Gulir ke bawah lalu pilih <strong>&quot;Add to Home Screen&quot; (Tambah ke Layar Utama)</strong>.
+                  </li>
+                  <li>
+                    Ketuk <strong>Add (Tambah)</strong> di pojok kanan atas.
+                  </li>
+                </ol>
+              </div>
+            ) : (
+              <div className="space-y-2 text-xs text-sky-100 leading-relaxed">
+                <p className="font-bold text-cyan-300">Panduan Android (Chrome / Edge):</p>
+                <ol className="list-decimal list-inside space-y-1.5 text-slate-300">
+                  <li>
+                    Buka URL aplikasi ini langsung di tab utama <strong>Google Chrome</strong> HP Anda.
+                  </li>
+                  <li>
+                    Ketuk ikon menu <strong>Titik Tiga (⋮)</strong> di pojok kanan atas browser.
+                  </li>
+                  <li>
+                    Pilih <strong>&quot;Install App&quot; (Instal Aplikasi)</strong> atau{' '}
+                    <strong>&quot;Tambahkan ke Layar Utama&quot;</strong>.
+                  </li>
+                </ol>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setShowGuideModal(false)}
+              className="w-full py-2.5 rounded-xl bg-sky-400 hover:bg-sky-300 text-slate-950 font-bold text-xs tracking-wider uppercase cursor-pointer"
+            >
+              MENGERTI
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 /**
@@ -94,11 +297,6 @@ function TacticalRadarLogo({ className = 'w-9 h-9' }) {
 /**
  * ============================================================================
  * KOMPONEN HUD INDIKATOR JARINGAN REAL-TIME DI HEADER ATAS (<LiveKitRoom>)
- * Menggunakan 100% Real LiveKit Hooks:
- * - useConnectionState()
- * - useParticipants()
- * - useLocalParticipant()
- * - <ConnectionQualityIndicator />
  * ============================================================================
  */
 function LiveKitHeaderHUD({ roomName, participantName, lowBandwidthMode, onOpenQrModal }) {
@@ -169,8 +367,10 @@ function LiveKitHeaderHUD({ roomName, participantName, lowBandwidthMode, onOpenQ
         </div>
       </div>
 
-      {/* Kanan: Real LiveKit ConnectionState & ConnectionQualityIndicator */}
+      {/* Kanan: Real LiveKit ConnectionState, ConnectionQualityIndicator & PWA Install */}
       <div className="flex items-center gap-2 ml-auto shrink-0">
+        <PWAInstallButton compact={true} />
+
         {localParticipant && (
           <ParticipantContextIfNeeded participant={localParticipant}>
             <div
@@ -268,7 +468,6 @@ function RealTimeChatOverlay({ isOpen, onClose, localCallsign, onUnreadChange })
 
   return (
     <aside className="absolute top-2 right-2 bottom-2 z-40 w-[calc(100%-1rem)] sm:w-88 md:w-96 bg-slate-900/95 backdrop-blur-md border border-sky-300/40 rounded-xl shadow-[0_0_35px_rgba(2,6,23,0.85)] flex flex-col overflow-hidden">
-      {/* Header Panel Chat */}
       <div className="shrink-0 px-4 py-3 bg-blue-950/90 border-b border-sky-300/30 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <MessageSquare className="w-4 h-4 text-sky-300" />
@@ -291,7 +490,6 @@ function RealTimeChatOverlay({ isOpen, onClose, localCallsign, onUnreadChange })
         </button>
       </div>
 
-      {/* Daftar Pesan */}
       <div className="flex-1 min-h-0 overflow-y-auto p-3.5 space-y-2.5">
         {chatMessages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center px-4 text-slate-400">
@@ -342,7 +540,6 @@ function RealTimeChatOverlay({ isOpen, onClose, localCallsign, onUnreadChange })
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Form Kirim Pesan */}
       <form
         onSubmit={handleSendMessage}
         className="shrink-0 p-3 bg-blue-950/90 border-t border-sky-300/30 flex items-center gap-2"
@@ -433,10 +630,8 @@ function RealTimeParticipantsModal({ isOpen, onClose, roomName }) {
 /**
  * ============================================================================
  * WORKSPACE UTAMA DI DALAM <LiveKitRoom> (STATE: IN_CALL)
- * Memuat:
- * - <VideoConference /> (otomatis pin/fokus saat ada Share Screen)
- * - HUD Overlay Taktis "CONFIDENTIAL - DISKOMLEKAU" (pointer-events-none, absolute)
- * - Custom Control Bar dengan tombol eksplisit "SHARE SCREEN" (Track.Source.ScreenShare) & "CHAT"
+ * - Share Screen HANYA dirender pada Desktop / Laptop / Layar Besar (`canShareScreen`).
+ * - Pada perangkat Mobile/HP, tombol Share Screen disembunyikan otomatis.
  * ============================================================================
  */
 function InCallWorkspace({
@@ -449,6 +644,7 @@ function InCallWorkspace({
 }) {
   const room = useRoomContext();
   const participants = useParticipants();
+  const canShareScreen = useCanShareScreen();
 
   // Hook resmi LiveKit untuk tombol SHARE SCREEN (Track.Source.ScreenShare)
   const {
@@ -496,7 +692,6 @@ function InCallWorkspace({
 
         {/* HUD "CONFIDENTIAL - DISKOMLEKAU" bergaya overlay taktis (pointer-events-none, absolute) */}
         <div className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between p-3 sm:p-5 overflow-hidden">
-          {/* Sudut Atas HUD */}
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 border-l-2 border-t-2 border-sky-300/50" />
@@ -521,7 +716,6 @@ function InCallWorkspace({
             <div className="w-4 h-4 border-r-2 border-t-2 border-sky-300/50" />
           </div>
 
-          {/* Watermark Taktis Tengah */}
           <div className="flex items-center justify-center my-auto">
             <div className="text-center opacity-15 select-none">
               <p className="text-sm sm:text-xl md:text-2xl font-extrabold tracking-[0.28em] text-sky-300 uppercase">
@@ -533,7 +727,6 @@ function InCallWorkspace({
             </div>
           </div>
 
-          {/* Sudut Bawah HUD */}
           <div className="flex items-end justify-between mb-12 sm:mb-14">
             <div className="w-4 h-4 border-l-2 border-b-2 border-sky-300/50" />
             <div className="w-4 h-4 border-r-2 border-b-2 border-sky-300/50" />
@@ -556,7 +749,7 @@ function InCallWorkspace({
         />
       </div>
 
-      {/* 3. CUSTOM TACTICAL CONTROL BAR (SHARE SCREEN, CHAT, PERSONEL, HEMAT DATA, QR, KELUAR) */}
+      {/* 3. CUSTOM TACTICAL CONTROL BAR (SHARE SCREEN DESKTOP ONLY, CHAT, PERSONEL, HEMAT DATA, KELUAR) */}
       <div className="shrink-0 bg-blue-950/95 border-t border-sky-300/35 px-2.5 py-2 sm:px-5 flex items-center justify-between gap-2 z-30">
         {/* Info Room & Callsign di Kiri */}
         <div className="hidden lg:flex items-center gap-2 text-xs text-sky-200">
@@ -570,25 +763,27 @@ function InCallWorkspace({
 
         {/* Deretan Tombol Utama Rapat Koordinasi */}
         <div className="flex items-center justify-between lg:justify-end gap-1.5 sm:gap-2 w-full lg:w-auto">
-          {/* TOMBOL EKSPLISIT SHARE SCREEN (Track.Source.ScreenShare) */}
-          <button
-            type="button"
-            onClick={screenShareButtonProps.onClick}
-            disabled={screenShareButtonProps.disabled}
-            className={`flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3.5 rounded-lg border text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer flex-1 lg:flex-initial ${
-              isScreenSharing
-                ? 'bg-cyan-300 text-slate-950 border-cyan-200 shadow-[0_0_16px_rgba(103,232,249,0.45)]'
-                : 'bg-slate-900 hover:bg-slate-800 text-sky-300 border-sky-300/45'
-            }`}
-            title="Bagikan Layar Presentasi Rapat (Track.Source.ScreenShare)"
-          >
-            {isScreenSharing ? (
-              <MonitorOff className="w-4 h-4 shrink-0" />
-            ) : (
-              <MonitorUp className="w-4 h-4 shrink-0" />
-            )}
-            <span>{isScreenSharing ? 'STOP SHARE' : 'SHARE SCREEN'}</span>
-          </button>
+          {/* TOMBOL SHARE SCREEN — HANYA TAMPIL DI DESKTOP / LAPTOP / LAYAR BESAR (> 768px) */}
+          {canShareScreen && (
+            <button
+              type="button"
+              onClick={screenShareButtonProps.onClick}
+              disabled={screenShareButtonProps.disabled}
+              className={`flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3.5 rounded-lg border text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer flex-1 lg:flex-initial ${
+                isScreenSharing
+                  ? 'bg-cyan-300 text-slate-950 border-cyan-200 shadow-[0_0_16px_rgba(103,232,249,0.45)]'
+                  : 'bg-slate-900 hover:bg-slate-800 text-sky-300 border-sky-300/45'
+              }`}
+              title="Bagikan Layar Presentasi Rapat (Khusus Desktop / Laptop)"
+            >
+              {isScreenSharing ? (
+                <MonitorOff className="w-4 h-4 shrink-0" />
+              ) : (
+                <MonitorUp className="w-4 h-4 shrink-0" />
+              )}
+              <span>{isScreenSharing ? 'STOP SHARE' : 'SHARE SCREEN'}</span>
+            </button>
+          )}
 
           {/* TOMBOL CHAT REAL-TIME */}
           <button
@@ -661,10 +856,8 @@ function InCallWorkspace({
  * ============================================================================
  */
 export default function App() {
-  // State Utama: 'LOBBY' | 'IN_CALL'
   const [appState, setAppState] = useState('LOBBY');
 
-  // Form State di LOBBY
   const [participantName, setParticipantName] = useState('KOMANDAN-01');
   const [roomName, setRoomName] = useState('OPS-GARUDA-01');
   const [sandi, setSandi] = useState(DEFAULT_SANDI);
@@ -673,19 +866,16 @@ export default function App() {
   );
   const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
 
-  // State Koneksi LiveKit
   const [token, setToken] = useState('');
   const [serverUrl, setServerUrl] = useState(import.meta.env.VITE_LIVEKIT_URL || '');
   const [isLoading, setIsLoading] = useState(false);
   const [isDeepLinkJoining, setIsDeepLinkJoining] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  // State UI Tambahan
   const [lowBandwidthMode, setLowBandwidthMode] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
-  // URL Deep Link Lengkap & URL Gambar QR Code (api.qrserver.com)
   const cleanRoomParam = (roomName || 'OPS-GARUDA-01').trim().toUpperCase();
   const cleanSandiParam = (sandi || DEFAULT_SANDI).trim();
   const deepLinkUrl =
@@ -699,9 +889,6 @@ export default function App() {
     deepLinkUrl
   )}`;
 
-  /**
-   * Fungsi Nyata Pemanggil Endpoint `/api/token`
-   */
   const requestTokenAndJoin = useCallback(
     async (targetRoom, targetCallsign, targetSandi) => {
       setErrorMsg('');
@@ -767,14 +954,7 @@ export default function App() {
     [customServerUrl]
   );
 
-  /**
-   * ==========================================================================
-   * 2. FITUR DEEP LINK JOIN (`new URLSearchParams(window.location.search)`)
-   * Membaca parameter `room` dan `sandi` (atau `pwd`).
-   * Jika ditemukan, bypass halaman LOBBY, generate callsign acak ("PERSONEL-45"),
-   * panggil fetch('/api/token'), dan otomatis masuk ke state `IN_CALL`.
-   * ==========================================================================
-   */
+  // Deteksi Deep Link Join via URLSearchParams (?room=OPS-GARUDA-01&sandi=yes)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
@@ -827,9 +1007,6 @@ export default function App() {
         lowBandwidthMode ? 'low-bandwidth-active' : ''
       }`}
     >
-      {/* ====================================================================
-       * LAYAR OTOMATIS SAAT PRAJURIT MASUK VIA DEEP LINK QR
-       * ==================================================================== */}
       {isDeepLinkJoining && appState === 'LOBBY' && (
         <div className="flex-1 flex flex-col items-center justify-center p-6 bg-blue-950 text-center">
           <TacticalRadarLogo className="w-16 h-16 mb-4 animate-pulse" />
@@ -845,13 +1022,9 @@ export default function App() {
         </div>
       )}
 
-      {/* ====================================================================
-       * STATE 1: HALAMAN LOBBY (ELEGANT LIGHT BLUE THEME)
-       * ==================================================================== */}
       {!isDeepLinkJoining && appState === 'LOBBY' && (
         <>
-          {/* Header Lobby */}
-          <header className="shrink-0 bg-blue-950/95 border-b border-sky-300/30 px-4 py-2.5 sm:px-6 flex items-center justify-between">
+          <header className="shrink-0 bg-blue-950/95 border-b border-sky-300/30 px-4 py-2.5 sm:px-6 flex items-center justify-between gap-2">
             <div className="flex items-center gap-3 min-w-0">
               <TacticalRadarLogo className="w-9 h-9 shrink-0" />
               <div className="min-w-0">
@@ -864,19 +1037,21 @@ export default function App() {
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowQrModal(true)}
-              className="px-3 py-1.5 rounded-lg bg-sky-400/15 hover:bg-sky-400/25 border border-sky-300/50 text-sky-300 text-xs font-bold tracking-wider uppercase flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
-            >
-              <QrCode className="w-4 h-4 text-cyan-300" />
-              <span className="hidden sm:inline">TAMPILKAN QR UNDANGAN</span>
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <PWAInstallButton />
+
+              <button
+                type="button"
+                onClick={() => setShowQrModal(true)}
+                className="px-3 py-1.5 rounded-lg bg-sky-400/15 hover:bg-sky-400/25 border border-sky-300/50 text-sky-300 text-xs font-bold tracking-wider uppercase flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+              >
+                <QrCode className="w-4 h-4 text-cyan-300" />
+                <span className="hidden sm:inline">TAMPILKAN QR UNDANGAN</span>
+              </button>
+            </div>
           </header>
 
-          {/* Konten Utama Lobby */}
           <main className="flex-1 min-h-0 flex items-center justify-center p-3 sm:p-6 overflow-y-auto relative bg-gradient-to-b from-slate-900 via-blue-950/90 to-slate-900">
-            {/* Grid Taktis Biru Muda */}
             <div
               className="absolute inset-0 pointer-events-none opacity-15"
               style={{
@@ -901,7 +1076,6 @@ export default function App() {
               </div>
 
               <form onSubmit={handleJoinSubmit} className="space-y-3.5">
-                {/* Input Callsign */}
                 <div>
                   <label
                     htmlFor="callsign-input"
@@ -921,7 +1095,6 @@ export default function App() {
                   />
                 </div>
 
-                {/* Grid Nama Room & Sandi Operasi */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label
@@ -966,7 +1139,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Opsi Konfigurasi WSS & Mode Hemat Data */}
                 <div className="flex items-center justify-between pt-0.5">
                   <button
                     type="button"
@@ -1013,7 +1185,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Tombol Utama: GABUNG OPERASI & TAMPILKAN QR UNDANGAN */}
                 <div className="pt-2 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <button
                     type="submit"
@@ -1037,7 +1208,7 @@ export default function App() {
               <div className="mt-4 pt-3 border-t border-sky-300/20 flex items-center justify-between text-[10px] sm:text-[11px] text-blue-400">
                 <span className="inline-flex items-center gap-1.5 text-sky-300 font-semibold">
                   <Lock className="w-3.5 h-3.5 text-cyan-300" />
-                  END-TO-END WEBRTC ENCRYPTED
+                  END-TO-END WEBRTC · PWA READY
                 </span>
                 <span>DISKOMLEKAU HQ</span>
               </div>
@@ -1046,9 +1217,6 @@ export default function App() {
         </>
       )}
 
-      {/* ====================================================================
-       * STATE 2: IN_CALL (<LiveKitRoom> + <VideoConference /> + SHARE SCREEN + CHAT)
-       * ==================================================================== */}
       {appState === 'IN_CALL' && token && serverUrl && (
         <LiveKitRoom
           video={!lowBandwidthMode}
@@ -1075,9 +1243,6 @@ export default function App() {
         </LiveKitRoom>
       )}
 
-      {/* ====================================================================
-       * MODAL QR UNDANGAN DEEP LINK (MENGGUNAKAN TAG <img> API QRSERVER)
-       * ==================================================================== */}
       {showQrModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="w-full max-w-sm bg-slate-900 border border-sky-300/50 rounded-2xl p-5 shadow-[0_0_45px_rgba(56,189,248,0.25)] flex flex-col items-center text-center gap-3.5">
@@ -1099,7 +1264,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* Tag <img> memanggil API QR Code Generator sesuai spesifikasi */}
             <div className="p-3.5 rounded-2xl bg-white border-4 border-sky-300 shadow-lg flex items-center justify-center">
               <img
                 src={qrCodeImageUrl}
