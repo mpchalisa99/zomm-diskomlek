@@ -76,6 +76,7 @@ export default async function handler(req, res) {
       canPublish: true,
       canSubscribe: true,
       canPublishData: true,
+      canUpdateOwnMetadata: true,
     });
 
     const token = await at.toJwt();

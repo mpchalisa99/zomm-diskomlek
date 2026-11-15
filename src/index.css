@@ -88,11 +88,12 @@
 
 .lk-participant-name {
   font-family: 'JetBrains Mono', monospace !important;
-  font-size: 0.74rem !important;
+  font-size: 0.7rem !important;
   font-weight: 600 !important;
-  letter-spacing: 0.05em !important;
+  letter-spacing: 0.03em !important;
   color: #e0f2fe !important;
-  text-transform: uppercase !important;
+  white-space: pre-line !important;
+  line-height: 1.35 !important;
 }
 
 /* Styling <ConnectionQualityIndicator /> asli dari @livekit/components-react */
