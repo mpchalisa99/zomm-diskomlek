@@ -497,7 +497,7 @@ function TacticalRadarLogo({ className = 'w-9 h-9' }) {
 function TniAuLogo({ className = 'w-9 h-9' }) {
   return (
     <div
-      className={`relative flex items-center justify-center rounded-full border border-amber-400/60 bg-slate-950 overflow-hidden shadow-[0_0_15px_rgba(251,191,36,0.2)] shrink-0 ${className}`}
+      className={`relative flex items-center justify-center rounded-lg border border-amber-400/60 bg-slate-950 overflow-hidden shadow-[0_0_15px_rgba(251,191,36,0.2)] shrink-0 ${className}`}
       title="TNI Angkatan Udara — Swa Bhuwana Paksa"
     >
       <img
@@ -573,7 +573,7 @@ function LiveKitHeaderHUD({
               TACTICAL VIDCOMM DISKOMLEKAU
             </h1>
             {/* Logo TNI AU tepat di sebelah kanan atas tulisan TACTICAL VIDCOMM DISKOMLEKAU */}
-            <TniAuLogo className="w-6 h-6 sm:w-7 sm:h-7" />
+            <TniAuLogo className="w-8 h-8 sm:w-9 sm:h-9 shrink-0" />
 
             {isScreenShareEnabled && (
               <span className="px-2 py-0.5 rounded bg-cyan-400/20 border border-cyan-300/60 text-[10px] font-bold text-cyan-300 tracking-wider uppercase shrink-0">
@@ -1487,7 +1487,7 @@ export default function App() {
                     TACTICAL VIDCOMM DISKOMLEKAU
                   </h1>
                   {/* Logo TNI AU di sebelah kanan atas tulisan TACTICAL VIDCOMM DISKOMLEKAU */}
-                  <TniAuLogo className="w-7 h-7 sm:w-8 sm:h-8" />
+                  <TniAuLogo className="w-9 h-9 shrink-0" />
                 </div>
                 <p className="text-[10px] sm:text-xs text-blue-400 tracking-widest truncate">
                   SECURE COMMAND & COORDINATION TELECONFERENCE
@@ -1531,7 +1531,6 @@ export default function App() {
                   </h2>
                 </div>
                 <div className="flex items-center gap-2">
-                  <TniAuLogo className="w-9 h-9" />
                   <Radio className="w-6 h-6 text-blue-400 shrink-0" />
                 </div>
               </div>
