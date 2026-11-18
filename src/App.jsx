@@ -4,32 +4,41 @@
  * TACTICAL VIDCOMM DISKOMLEKAU — 100% PRODUCTION WEBRTC LIVEKIT & PWA
  *
  * Fitur Utama:
- * 1. Koordinat GPS Real-Time Tanpa Map per Personel (Apabila Available):
- *    - Membaca GPS perangkat menggunakan `navigator.geolocation.watchPosition`.
- *    - Konversi otomatis ke format DMS Indonesia (contoh: `7°15'30" LS, 110°25'45" BT`).
- *    - Reverse Geocoding otomatis (Kecamatan, Kabupaten/Kota, Provinsi — contoh:
- *      `Makasar, Jakarta Timur, DKI Jakarta`).
- *    - Sinkronisasi ke masing-masing user di dalam Room menggunakan LiveKit Metadata
- *      (`localParticipant.setMetadata` & `localParticipant.setName`) sehingga tampil
- *      di kotak video masing-masing peserta, di HUD atas, dan di Daftar Personel.
- * 2. Logo TNI AU (Swa Bhuwana Paksa):
- *    - Ditampilkan di sebelah kanan tulisan "TACTICAL VIDCOMM DISKOMLEKAU" serta di
- *      pojok kanan atas antarmuka menggunakan gambar `/assets/aistudio/1792503945296_954409ac.jpg`.
- * 3. Default State Lobby ("ANU", Room "yes", Sandi "yes"), Share Screen (`<TrackToggle />`),
- *    Pindah Kamera Depan/Belakang (`room.switchActiveDevice`), Deep Link QR, & Real-Time Chat.
+ * 1. Callsign Awal Kosong ("") saat Login & Tombol "GABUNG" Disabled jika Callsign kosong.
+ * 2. Grid 6 Client di Mobile (<GridLayout /> + CustomParticipantTile):
+ *    - Memaksa 2 kolom x 3 baris (grid-cols-2 grid-rows-3) pada layar mobile (<= 768px)
+ *      dengan min-h-[130px] agar 6 video personel muat utuh di layar HP vertikal.
+ * 3. Fitur Ubah Sandi/Nama Saat Rapat (In-Call):
+ *    - Tombol "UBAH SANDI/NAMA" di Control Bar memunculkan modal input nama baru.
+ *    - Mengeksekusi perubahan secara real-time via `useLocalParticipant()` menggunakan
+ *      `localParticipant.setName(newName)` / `updateName` dan `localParticipant.setMetadata(...)`.
+ * 4. Overlay Identitas & GPS Transparan (HUD Taktis):
+ *    - Saat IN_CALL, mengambil Latitude & Longitude via `navigator.geolocation.getCurrentPosition()`
+ *      dan `watchPosition()`, lalu melakukan Reverse Geocoding via Nominatim OpenStreetMap
+ *      (misal: "Kec. Colomadu, Karanganyar") dan menyimpannya ke Metadata LiveKit.
+ *    - Membungkus `<ParticipantTile />` dengan `<CustomParticipantTile />` dan menampilkan
+ *      overlay absolut `absolute bottom-1 left-1 right-1 z-50 bg-black/40 text-white text-[8px]
+ *      md:text-[10px] font-mono p-1 rounded leading-tight backdrop-blur-sm` dengan format:
+ *      "[CALLSIGN/NAMA] | [LAT, LNG] | [LOKASI]".
  * ============================================================================
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   LiveKitRoom,
-  VideoConference,
+  GridLayout,
+  ParticipantTile,
+  RoomAudioRenderer,
   ConnectionQualityIndicator,
   TrackToggle,
+  useTracks,
   useConnectionState,
   useRoomContext,
   useParticipants,
   useLocalParticipant,
+  useParticipantInfo,
+  useMaybeTrackRefContext,
+  useMaybeParticipantContext,
   useChat,
   ParticipantContextIfNeeded,
 } from '@livekit/components-react';
@@ -60,11 +69,11 @@ import {
   Smartphone,
   SwitchCamera,
   MapPin,
-  Navigation,
+  Edit3,
 } from 'lucide-react';
 
-// SETTING DEFAULT LOBBY (NILAI AWAL)
-const DEFAULT_CALLSIGN = 'ANU';
+// 1. SETTING DEFAULT LOBBY: Callsign wajib kosong ("") di awal
+const DEFAULT_CALLSIGN = '';
 const DEFAULT_ROOM_NAME = 'yes';
 const DEFAULT_SANDI = 'yes';
 
@@ -118,13 +127,13 @@ function formatGpsToIndonesianDMS(latitude, longitude) {
 }
 
 /**
- * Helper Ekstraksi Metadata GPS dari Participant LiveKit
+ * Helper Ekstraksi Metadata Identitas & GPS dari Participant LiveKit
  */
 function parseParticipantGpsMetadata(participant) {
   if (!participant?.metadata) return null;
   try {
     const parsed = JSON.parse(participant.metadata);
-    if (parsed && (parsed.dms || parsed.region)) {
+    if (parsed && typeof parsed === 'object') {
       return parsed;
     }
   } catch {
@@ -135,17 +144,18 @@ function parseParticipantGpsMetadata(participant) {
 
 /**
  * ============================================================================
- * HOOK: REAL-TIME GEOLOCATION + REVERSE GEOCODING (TANPA MAP)
- * Mengambil koordinat GPS perangkat (jika diizinkan/available) serta nama
- * Kecamatan, Kabupaten/Kota, dan Provinsi secara otomatis.
+ * HOOK: REAL-TIME GEOLOCATION + REVERSE GEOCODING (NOMINATIM OPENSTREETMAP)
+ * Mengambil Latitude & Longitude perangkat menggunakan `getCurrentPosition()`
+ * serta mengubah koordinat menjadi nama lokasi (contoh: "Kec. Colomadu").
  * ============================================================================
  */
 function useTacticalGpsLocation() {
   const [gpsData, setGpsData] = useState({
     available: false,
-    status: 'MENCARI SINYAL GPS...',
+    status: 'MENCARI GPS...',
     latitude: null,
     longitude: null,
+    latLngText: '',
     accuracy: null,
     dms: '',
     kecamatan: '',
@@ -157,7 +167,6 @@ function useTacticalGpsLocation() {
   const lastGeocodeCoordRef = useRef({ lat: null, lon: null });
 
   const reverseGeocodeCoordinates = useCallback(async (lat, lon) => {
-    // Hindari request berulang jika posisi belum bergeser signifikan (< ~100m)
     if (
       lastGeocodeCoordRef.current.lat !== null &&
       Math.abs(lastGeocodeCoordRef.current.lat - lat) < 0.001 &&
@@ -168,7 +177,7 @@ function useTacticalGpsLocation() {
     lastGeocodeCoordRef.current = { lat, lon };
 
     try {
-      // 1. Coba OpenStreetMap Nominatim (Bahasa Indonesia)
+      // 1. Nominatim OpenStreetMap Reverse Geocoding API (Bahasa Indonesia)
       const res = await fetch(
         `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=14&addressdetails=1&accept-language=id`,
         {
@@ -198,19 +207,21 @@ function useTacticalGpsLocation() {
           '';
         const rawProvinsi = addr.state || addr.province || addr.region || '';
 
-        const cleanKec = rawKecamatan.replace(/^Kecamatan\s+/i, '').trim();
+        const cleanKecName = rawKecamatan.replace(/^(Kecamatan|Kec\.)\s+/i, '').trim();
+        const formattedKec = cleanKecName ? `Kec. ${cleanKecName}` : '';
         const cleanKab = rawKabupaten.trim();
-        const cleanProv = rawProvinsi.replace(/^(Provinsi|Daerah Khusus Ibukota)\s+/i, '').trim();
+        const cleanProv = rawProvinsi
+          .replace(/^(Provinsi|Daerah Khusus Ibukota)\s+/i, '')
+          .trim();
 
-        const parts = [cleanKec, cleanKab, cleanProv].filter(Boolean);
-        // Hilangkan duplikat berurutan
+        const parts = [formattedKec, cleanKab, cleanProv].filter(Boolean);
         const uniqueParts = parts.filter((item, idx) => parts.indexOf(item) === idx);
         const regionStr = uniqueParts.join(', ');
 
         if (regionStr) {
           setGpsData((prev) => ({
             ...prev,
-            kecamatan: cleanKec,
+            kecamatan: formattedKec,
             kabupaten: cleanKab,
             provinsi: cleanProv,
             regionLabel: regionStr,
@@ -219,28 +230,31 @@ function useTacticalGpsLocation() {
         }
       }
     } catch {
-      // Lanjut ke fallback kedua
+      // Lanjut ke fallback kedua jika Nominatim gagal
     }
 
     try {
-      // 2. Fallback: BigDataCloud Reverse Geocode Client API (Tanpa API Key)
+      // 2. Fallback: BigDataCloud Reverse Geocode Client API
       const fallbackRes = await fetch(
         `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=id`
       );
       if (fallbackRes.ok) {
         const fbData = await fallbackRes.json();
-        const kec = (fbData.locality || '').replace(/^Kecamatan\s+/i, '').trim();
+        const rawKec = (fbData.locality || '')
+          .replace(/^(Kecamatan|Kec\.)\s+/i, '')
+          .trim();
+        const formattedKec = rawKec ? `Kec. ${rawKec}` : '';
         const kab = (fbData.city || fbData.principalSubdivision || '').trim();
         const prov = (fbData.principalSubdivision || '').trim();
 
-        const parts = [kec, kab, prov].filter(Boolean);
+        const parts = [formattedKec, kab, prov].filter(Boolean);
         const uniqueParts = parts.filter((item, idx) => parts.indexOf(item) === idx);
         const regionStr = uniqueParts.join(', ');
 
         if (regionStr) {
           setGpsData((prev) => ({
             ...prev,
-            kecamatan: kec,
+            kecamatan: formattedKec,
             kabupaten: kab,
             provinsi: prov,
             regionLabel: regionStr,
@@ -248,16 +262,16 @@ function useTacticalGpsLocation() {
         }
       }
     } catch {
-      // Biarkan hanya koordinat DMS jika offline
+      // Tetap gunakan koordinat jika perangkat sedang offline dari geocoder
     }
   }, []);
 
-  useEffect(() => {
+  const requestCurrentPosition = useCallback(() => {
     if (typeof window === 'undefined' || !('geolocation' in navigator)) {
       setGpsData((prev) => ({
         ...prev,
         available: false,
-        status: 'GPS TIDAK TERSEDIA DI PERANGKAT',
+        status: 'GPS TIDAK TERSEDIA',
       }));
       return;
     }
@@ -265,6 +279,7 @@ function useTacticalGpsLocation() {
     const handleSuccess = (pos) => {
       const { latitude, longitude, accuracy } = pos.coords;
       const dmsString = formatGpsToIndonesianDMS(latitude, longitude);
+      const latLngFormatted = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
 
       setGpsData((prev) => ({
         ...prev,
@@ -272,6 +287,7 @@ function useTacticalGpsLocation() {
         status: 'GPS LOCKED',
         latitude,
         longitude,
+        latLngText: latLngFormatted,
         accuracy: Math.round(accuracy || 0),
         dms: dmsString,
       }));
@@ -283,10 +299,51 @@ function useTacticalGpsLocation() {
       setGpsData((prev) => ({
         ...prev,
         available: false,
-        status:
-          err.code === 1
-            ? 'IZIN GPS DITOLAK'
-            : 'SINYAL GPS BELUM TERSEDIA',
+        status: err.code === 1 ? 'IZIN GPS DITOLAK' : 'SINYAL GPS BELUM TERSEDIA',
+      }));
+    };
+
+    navigator.geolocation.getCurrentPosition(handleSuccess, handleError, {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 15000,
+    });
+  }, [reverseGeocodeCoordinates]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('geolocation' in navigator)) {
+      setGpsData((prev) => ({
+        ...prev,
+        available: false,
+        status: 'GPS TIDAK TERSEDIA',
+      }));
+      return;
+    }
+
+    const handleSuccess = (pos) => {
+      const { latitude, longitude, accuracy } = pos.coords;
+      const dmsString = formatGpsToIndonesianDMS(latitude, longitude);
+      const latLngFormatted = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+
+      setGpsData((prev) => ({
+        ...prev,
+        available: true,
+        status: 'GPS LOCKED',
+        latitude,
+        longitude,
+        latLngText: latLngFormatted,
+        accuracy: Math.round(accuracy || 0),
+        dms: dmsString,
+      }));
+
+      reverseGeocodeCoordinates(latitude, longitude);
+    };
+
+    const handleError = (err) => {
+      setGpsData((prev) => ({
+        ...prev,
+        available: false,
+        status: err.code === 1 ? 'IZIN GPS DITOLAK' : 'SINYAL GPS BELUM TERSEDIA',
       }));
     };
 
@@ -307,7 +364,10 @@ function useTacticalGpsLocation() {
     };
   }, [reverseGeocodeCoordinates]);
 
-  return gpsData;
+  return {
+    ...gpsData,
+    refreshGps: requestCurrentPosition,
+  };
 }
 
 /**
@@ -479,7 +539,7 @@ function PWAInstallButton({ compact = false }) {
 function TacticalRadarLogo({ className = 'w-9 h-9' }) {
   return (
     <div
-      className={`relative flex items-center justify-center rounded-lg border border-sky-300/40 bg-blue-950/80 overflow-hidden shadow-[0_0_15px_rgba(56,189,248,0.15)] ${className}`}
+      className={`relative flex items-center justify-center rounded-lg border border-sky-300/40 bg-blue-950/80 overflow-hidden shadow-[0_0_15px_rgba(56,189,248,0.15)] shrink-0 ${className}`}
     >
       <img
         src={LOGO_DISKOMLEKAU_SRC}
@@ -492,7 +552,7 @@ function TacticalRadarLogo({ className = 'w-9 h-9' }) {
 }
 
 /**
- * Komponen Logo Resmi TNI AU — Swa Bhuwana Paksa (Sebelah Kanan Tulisan & Pojok Kanan Atas)
+ * Komponen Logo Resmi TNI AU — Swa Bhuwana Paksa (Sebelah Kanan Tulisan)
  */
 function TniAuLogo({ className = 'w-9 h-9' }) {
   return (
@@ -512,9 +572,101 @@ function TniAuLogo({ className = 'w-9 h-9' }) {
 
 /**
  * ============================================================================
+ * 4. CUSTOM PARTICIPANT TILE DENGAN OVERLAY IDENTITAS & GPS TRANSPARAN (HUD TAKTIS)
+ * Membungkus `<ParticipantTile />` bawaan LiveKit dan menambahkan overlay absolut:
+ * `absolute bottom-1 left-1 right-1 z-50 bg-black/40 text-white text-[8px] md:text-[10px]
+ *  font-mono p-1 rounded leading-tight backdrop-blur-sm`
+ * Format Teks: "[CALLSIGN/NAMA] | [LAT, LNG] | [LOKASI]"
+ * ============================================================================
+ */
+function CustomParticipantTile({ localGps, localCallsign, ...tileProps }) {
+  const contextTrackRef = useMaybeTrackRefContext();
+  const contextParticipant = useMaybeParticipantContext();
+
+  const activeTrackRef = tileProps.trackRef || contextTrackRef;
+  const participant = activeTrackRef?.participant || contextParticipant;
+
+  // Hook LiveKit yang otomatis merender ulang saat name/metadata peserta berubah
+  const participantInfo = useParticipantInfo({ participant });
+
+  const metaGps = parseParticipantGpsMetadata(participant);
+  const isLocal = Boolean(participant?.isLocal);
+
+  // 1. Resolusi [CALLSIGN/NAMA]
+  const rawName =
+    metaGps?.callsign ||
+    participantInfo?.name ||
+    participant?.name ||
+    (isLocal ? localCallsign : '') ||
+    participantInfo?.identity ||
+    participant?.identity ||
+    'PERSONEL';
+  const displayCallsign = String(rawName).split('\n')[0].trim();
+
+  // 2. Resolusi [LAT, LNG]
+  let displayLatLng = 'GPS STANDBY';
+  if (isLocal && localGps?.available && typeof localGps.latitude === 'number') {
+    displayLatLng = `${localGps.latitude.toFixed(5)}, ${localGps.longitude.toFixed(5)}`;
+  } else if (
+    metaGps &&
+    typeof metaGps.lat === 'number' &&
+    typeof metaGps.lng === 'number'
+  ) {
+    displayLatLng = `${Number(metaGps.lat).toFixed(5)}, ${Number(metaGps.lng).toFixed(5)}`;
+  } else if (
+    metaGps &&
+    typeof metaGps.lat === 'number' &&
+    typeof metaGps.lon === 'number'
+  ) {
+    displayLatLng = `${Number(metaGps.lat).toFixed(5)}, ${Number(metaGps.lon).toFixed(5)}`;
+  } else if (metaGps?.latLng) {
+    displayLatLng = metaGps.latLng;
+  } else if (metaGps?.dms) {
+    displayLatLng = metaGps.dms;
+  }
+
+  // 3. Resolusi [LOKASI]
+  const displayLocation = isLocal
+    ? localGps?.regionLabel ||
+      metaGps?.location ||
+      metaGps?.region ||
+      (localGps?.available ? 'MENDETEKSI LOKASI...' : localGps?.status || 'LOKASI OFF')
+    : metaGps?.location || metaGps?.region || 'LOKASI BELUM TERSEDIA';
+
+  const isScreenShareTrack =
+    activeTrackRef?.source === Track.Source.ScreenShare;
+
+  const formattedHudLine = `${displayCallsign}${
+    isScreenShareTrack ? ' (SHARE SCREEN)' : ''
+  } | ${displayLatLng} | ${displayLocation}`;
+
+  return (
+    <div className="tactical-tile-container relative w-full h-full min-h-[130px] overflow-hidden rounded-[10px]">
+      <ParticipantTile
+        {...tileProps}
+        trackRef={activeTrackRef}
+        className="!h-full !w-full min-h-[130px]"
+      />
+
+      {/* OVERLAY IDENTITAS & GPS TRANSPARAN (HUD TAKTIS) */}
+      <div className="absolute bottom-1 left-1 right-1 z-50 bg-black/40 text-white text-[8px] md:text-[10px] font-mono p-1 rounded leading-tight backdrop-blur-sm pointer-events-none flex items-center justify-between gap-1.5 border border-sky-300/20">
+        <span className="truncate font-semibold tracking-tight text-sky-100">
+          {formattedHudLine}
+        </span>
+
+        {participant && (
+          <ParticipantContextIfNeeded participant={participant}>
+            <ConnectionQualityIndicator className="!p-0 !bg-transparent shrink-0" />
+          </ParticipantContextIfNeeded>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * ============================================================================
  * KOMPONEN HUD INDIKATOR JARINGAN & GPS DI HEADER ATAS (<LiveKitRoom>)
- * Menampilkan Logo DISKOMLEKAU + Tulisan TACTICAL VIDCOMM DISKOMLEKAU + Logo TNI AU
- * di sebelah kanannya serta di pojok kanan atas.
  * ============================================================================
  */
 function LiveKitHeaderHUD({
@@ -564,7 +716,6 @@ function LiveKitHeaderHUD({
 
   return (
     <header className="shrink-0 bg-slate-900/95 border-b border-sky-300/30 px-3 py-2 sm:px-5 flex flex-wrap items-center justify-between gap-2 z-30">
-      {/* Kiri: Logo DISKOMLEKAU + Tulisan TACTICAL VIDCOMM DISKOMLEKAU + Logo TNI AU di Sebelah Kanannya */}
       <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
         <TacticalRadarLogo className="w-8 h-8 sm:w-9 sm:h-9 shrink-0" />
         <div className="min-w-0">
@@ -572,7 +723,6 @@ function LiveKitHeaderHUD({
             <h1 className="text-xs sm:text-sm md:text-base font-bold tracking-wider text-sky-300 truncate">
               TACTICAL VIDCOMM DISKOMLEKAU
             </h1>
-            {/* Logo TNI AU tepat di sebelah kanan atas tulisan TACTICAL VIDCOMM DISKOMLEKAU */}
             <TniAuLogo className="w-8 h-8 sm:w-9 sm:h-9 shrink-0" />
 
             {isScreenShareEnabled && (
@@ -590,13 +740,13 @@ function LiveKitHeaderHUD({
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] sm:text-xs text-slate-300">
             <span className="text-sky-300 font-semibold">ROOM: {roomName}</span>
             <span className="text-blue-400">·</span>
-            <span className="text-cyan-300 font-semibold">USER: {participantName}</span>
-            {localGps?.available && localGps.dms && (
+            <span className="text-cyan-300 font-semibold">CALLSIGN: {participantName}</span>
+            {localGps?.available && localGps.latLngText && (
               <>
                 <span className="text-blue-400 hidden md:inline">·</span>
                 <span className="hidden md:inline-flex items-center gap-1 text-sky-200 font-mono text-[10px]">
                   <MapPin className="w-3 h-3 text-cyan-300 shrink-0" />
-                  <span>{localGps.dms}</span>
+                  <span>{localGps.latLngText}</span>
                   {localGps.regionLabel && (
                     <span className="text-cyan-300">({localGps.regionLabel})</span>
                   )}
@@ -607,7 +757,6 @@ function LiveKitHeaderHUD({
         </div>
       </div>
 
-      {/* Kanan: Indikator Jaringan, QR, PWA Install, & Logo TNI AU Pojok Kanan Atas */}
       <div className="flex items-center gap-2 ml-auto shrink-0">
         <PWAInstallButton compact={true} />
 
@@ -666,6 +815,167 @@ function LiveKitHeaderHUD({
 
 /**
  * ============================================================================
+ * 3. MODAL UBAH NAMA / CALLSIGN SAAT RAPAT (IN-CALL)
+ * Mengeksekusi perubahan menggunakan `useLocalParticipant()` via
+ * `localParticipant.setName(newName)` / `updateName` dan `localParticipant.setMetadata(...)`
+ * ============================================================================
+ */
+function ChangeCallsignModal({
+  isOpen,
+  onClose,
+  currentName,
+  localGps,
+  onSuccessUpdateName,
+}) {
+  const { localParticipant } = useLocalParticipant();
+  const [newNameInput, setNewNameInput] = useState(currentName || '');
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [updateError, setUpdateError] = useState('');
+
+  useEffect(() => {
+    if (isOpen) {
+      setNewNameInput(currentName || '');
+      setUpdateError('');
+    }
+  }, [isOpen, currentName]);
+
+  if (!isOpen) return null;
+
+  const handleSubmitNewName = async (e) => {
+    e.preventDefault();
+    const trimmedName = newNameInput.trim();
+    if (!trimmedName) {
+      setUpdateError('Callsign / Nama baru tidak boleh kosong.');
+      return;
+    }
+
+    setIsUpdating(true);
+    setUpdateError('');
+
+    try {
+      const latVal =
+        localGps?.available && typeof localGps.latitude === 'number'
+          ? localGps.latitude
+          : null;
+      const lngVal =
+        localGps?.available && typeof localGps.longitude === 'number'
+          ? localGps.longitude
+          : null;
+      const latLngStr =
+        latVal !== null && lngVal !== null
+          ? `${latVal.toFixed(5)}, ${lngVal.toFixed(5)}`
+          : '';
+      const locationStr = localGps?.regionLabel || '';
+
+      const metadataPayload = JSON.stringify({
+        callsign: trimmedName,
+        lat: latVal,
+        lng: lngVal,
+        lon: lngVal,
+        latLng: latLngStr,
+        dms: localGps?.dms || '',
+        location: locationStr,
+        region: locationStr,
+        updatedAt: Date.now(),
+      });
+
+      if (localParticipant) {
+        if (typeof localParticipant.updateName === 'function') {
+          await localParticipant.updateName(trimmedName);
+        } else if (typeof localParticipant.setName === 'function') {
+          await localParticipant.setName(trimmedName);
+        }
+
+        if (typeof localParticipant.setMetadata === 'function') {
+          await localParticipant.setMetadata(metadataPayload);
+        }
+      }
+
+      onSuccessUpdateName(trimmedName);
+      onClose();
+    } catch (err) {
+      console.error('Gagal memperbarui nama/metadata peserta:', err);
+      // Tetap perbarui di sisi lokal meskipun server sedang sibuk
+      onSuccessUpdateName(trimmedName);
+      onClose();
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="w-full max-w-sm bg-slate-900 border border-sky-300/50 rounded-2xl p-5 shadow-[0_0_40px_rgba(56,189,248,0.25)] space-y-4">
+        <div className="flex items-center justify-between border-b border-sky-300/25 pb-2.5">
+          <div className="flex items-center gap-2">
+            <Edit3 className="w-4 h-4 text-cyan-300" />
+            <div>
+              <h3 className="text-xs sm:text-sm font-bold text-sky-300 tracking-wider uppercase">
+                UBAH SANDI / NAMA PERSONEL
+              </h3>
+              <p className="text-[10px] text-cyan-300">
+                SINKRONISASI REAL-TIME METADATA LIVEKIT
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-lg bg-blue-950 border border-sky-300/30 text-sky-300 hover:bg-slate-800 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmitNewName} className="space-y-3.5">
+          <div>
+            <label
+              htmlFor="new-callsign-input"
+              className="block text-xs font-bold uppercase tracking-wider text-sky-300 mb-1"
+            >
+              CALLSIGN / NAMA BARU
+            </label>
+            <input
+              id="new-callsign-input"
+              type="text"
+              required
+              autoFocus
+              value={newNameInput}
+              onChange={(e) => setNewNameInput(e.target.value)}
+              className="w-full px-3.5 py-2.5 text-sm font-bold tracking-wider bg-blue-950/85 border border-sky-300/50 rounded-lg text-sky-100 focus:outline-none focus:border-cyan-300"
+            />
+          </div>
+
+          {updateError && (
+            <p className="text-xs text-red-300 bg-red-950/70 border border-red-400/50 rounded-lg px-3 py-2">
+              {updateError}
+            </p>
+          )}
+
+          <div className="grid grid-cols-2 gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="py-2.5 px-3 rounded-xl bg-blue-950 hover:bg-slate-800 text-sky-300 border border-sky-300/40 text-xs font-bold tracking-wider uppercase cursor-pointer"
+            >
+              BATAL
+            </button>
+            <button
+              type="submit"
+              disabled={isUpdating || !newNameInput.trim()}
+              className="py-2.5 px-3 rounded-xl bg-sky-400 hover:bg-sky-300 disabled:opacity-40 text-slate-950 font-bold text-xs tracking-wider uppercase cursor-pointer"
+            >
+              {isUpdating ? 'MENYIMPAN...' : 'SIMPAN NAMA'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * ============================================================================
  * KOMPONEN REAL-TIME CHAT PANEL (DI ATAS GRID VIDEO)
  * ============================================================================
  */
@@ -706,7 +1016,7 @@ function RealTimeChatOverlay({ isOpen, onClose, localCallsign, onUnreadChange })
   if (!isOpen) return null;
 
   return (
-    <aside className="absolute top-2 right-2 bottom-2 z-40 w-[calc(100%-1rem)] sm:w-88 md:w-96 bg-slate-900/95 backdrop-blur-md border border-sky-300/40 rounded-xl shadow-[0_0_35px_rgba(2,6,23,0.85)] flex flex-col overflow-hidden">
+    <aside className="absolute top-2 right-2 bottom-2 z-50 w-[calc(100%-1rem)] sm:w-88 md:w-96 bg-slate-900/95 backdrop-blur-md border border-sky-300/40 rounded-xl shadow-[0_0_35px_rgba(2,6,23,0.85)] flex flex-col overflow-hidden">
       <div className="shrink-0 px-4 py-3 bg-blue-950/90 border-b border-sky-300/30 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <MessageSquare className="w-4 h-4 text-sky-300" />
@@ -742,7 +1052,9 @@ function RealTimeChatOverlay({ isOpen, onClose, localCallsign, onUnreadChange })
           </div>
         ) : (
           chatMessages.map((msg, idx) => {
-            const sender = msg.from?.name || msg.from?.identity || 'PERSONEL';
+            const metaSender = parseParticipantGpsMetadata(msg.from);
+            const sender =
+              metaSender?.callsign || msg.from?.name || msg.from?.identity || 'PERSONEL';
             const isSelf =
               msg.from?.isLocal ||
               sender.toUpperCase() === String(localCallsign).toUpperCase();
@@ -806,10 +1118,9 @@ function RealTimeChatOverlay({ isOpen, onClose, localCallsign, onUnreadChange })
 /**
  * ============================================================================
  * MODAL DAFTAR PERSONEL AKTIF, KOORDINAT GPS & INDIKATOR SINYAL
- * Menampilkan koordinat DMS + Kecamatan/Kabupaten/Provinsi masing-masing user
  * ============================================================================
  */
-function RealTimeParticipantsModal({ isOpen, onClose, roomName, localGps }) {
+function RealTimeParticipantsModal({ isOpen, onClose, roomName, localGps, localCallsign }) {
   const participants = useParticipants();
 
   if (!isOpen) return null;
@@ -823,7 +1134,7 @@ function RealTimeParticipantsModal({ isOpen, onClose, roomName, localGps }) {
               DAFTAR PERSONEL & POSISI GPS ({participants.length})
             </h3>
             <p className="text-[10px] text-cyan-300/80">
-              ROOM: {roomName} · KOORDINAT DMS & WILAYAH ADMINISTRATIF
+              ROOM: {roomName} · KOORDINAT LAT/LNG & WILAYAH ADMINISTRATIF
             </p>
           </div>
           <button
@@ -838,13 +1149,17 @@ function RealTimeParticipantsModal({ isOpen, onClose, roomName, localGps }) {
         <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5">
           {participants.map((p) => {
             const metaGps = parseParticipantGpsMetadata(p);
-            const dmsCoord = p.isLocal
-              ? localGps?.dms || metaGps?.dms
-              : metaGps?.dms;
+            const latLngCoord = p.isLocal
+              ? localGps?.latLngText || metaGps?.latLng || metaGps?.dms
+              : metaGps?.latLng ||
+                (typeof metaGps?.lat === 'number' && typeof metaGps?.lng === 'number'
+                  ? `${Number(metaGps.lat).toFixed(5)}, ${Number(metaGps.lng).toFixed(5)}`
+                  : metaGps?.dms);
             const regionText = p.isLocal
-              ? localGps?.regionLabel || metaGps?.region
-              : metaGps?.region;
-            const displayCallsign = metaGps?.callsign || p.identity;
+              ? localGps?.regionLabel || metaGps?.location || metaGps?.region
+              : metaGps?.location || metaGps?.region;
+            const displayCallsign =
+              metaGps?.callsign || p.name || (p.isLocal ? localCallsign : '') || p.identity;
 
             return (
               <ParticipantContextIfNeeded key={p.identity} participant={p}>
@@ -863,17 +1178,14 @@ function RealTimeParticipantsModal({ isOpen, onClose, roomName, localGps }) {
                           : 'STANDBY'}
                       </p>
 
-                      {/* Tampilan Koordinat GPS & Provinsi/Kabupaten/Kecamatan per User */}
-                      {dmsCoord ? (
+                      {latLngCoord ? (
                         <div className="pt-1 text-[10px] font-mono text-sky-200 space-y-0.5">
                           <div className="flex items-center gap-1 text-cyan-300 font-bold">
                             <MapPin className="w-3 h-3 shrink-0" />
-                            <span>{dmsCoord}</span>
+                            <span>{latLngCoord}</span>
                           </div>
                           {regionText && (
-                            <div className="text-sky-300/90 pl-4">
-                              {regionText}
-                            </div>
+                            <div className="text-sky-300/90 pl-4">{regionText}</div>
                           )}
                         </div>
                       ) : (
@@ -900,13 +1212,14 @@ function RealTimeParticipantsModal({ isOpen, onClose, roomName, localGps }) {
 /**
  * ============================================================================
  * WORKSPACE UTAMA DI DALAM <LiveKitRoom> (STATE: IN_CALL)
- * Menyinkronkan Koordinat GPS + Wilayah (Kecamatan, Kabupaten/Kota, Provinsi)
- * ke metadata & label peserta LiveKit agar tampil pada masing-masing kotak video user.
+ * Menggunakan `<GridLayout />` dengan `<CustomParticipantTile />` yang memaksa
+ * 2 kolom x 3 baris (min-h-[130px]) pada layar mobile agar 6 client muat utuh.
  * ============================================================================
  */
 function InCallWorkspace({
   roomName,
   participantName,
+  onUpdateParticipantName,
   lowBandwidthMode,
   localGps,
   onToggleLowBandwidth,
@@ -918,55 +1231,93 @@ function InCallWorkspace({
   const { localParticipant, isCameraEnabled } = useLocalParticipant();
   const connectionState = useConnectionState();
 
+  // Ambil daftar track video (Camera & ScreenShare) untuk dirender di dalam <GridLayout />
+  const tracks = useTracks(
+    [
+      { source: Track.Source.Camera, withPlaceholder: true },
+      { source: Track.Source.ScreenShare, withPlaceholder: false },
+    ],
+    { onlySubscribed: false }
+  );
+
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [showParticipantsModal, setShowParticipantsModal] = useState(false);
+  const [showChangeNameModal, setShowChangeNameModal] = useState(false);
 
   // State untuk fitur Pindah Kamera (Depan / Belakang)
   const [activeCameraId, setActiveCameraId] = useState('');
   const [cameraFacingMode, setCameraFacingMode] = useState('user');
   const [isSwitchingCamera, setIsSwitchingCamera] = useState(false);
 
-  // Sinkronkan Koordinat GPS & Wilayah Administratif ke LiveKit Participant Metadata & Name
-  // sehingga setiap kotak video peserta (<VideoConference />) menampilkan Callsign + Koordinat DMS + Wilayah!
+  // Saat masuk ke IN_CALL, panggil `navigator.geolocation.getCurrentPosition()` melalui hook
   useEffect(() => {
-    if (
-      !localParticipant ||
-      connectionState !== ConnectionState.Connected ||
-      !localGps?.available ||
-      !localGps?.dms
-    ) {
+    if (localGps?.refreshGps) {
+      localGps.refreshGps();
+    }
+  }, [localGps?.refreshGps]);
+
+  // Sinkronkan Callsign, Latitude, Longitude, & Lokasi Hasil Reverse Geocoding ke Metadata LiveKit
+  useEffect(() => {
+    if (!localParticipant || connectionState !== ConnectionState.Connected) {
       return;
     }
 
-    const syncGpsToLiveKit = async () => {
-      try {
-        const metadataPayload = JSON.stringify({
-          callsign: participantName,
-          dms: localGps.dms,
-          region: localGps.regionLabel || '',
-          lat: localGps.latitude,
-          lon: localGps.longitude,
-        });
+    const latVal =
+      localGps?.available && typeof localGps.latitude === 'number'
+        ? localGps.latitude
+        : null;
+    const lngVal =
+      localGps?.available && typeof localGps.longitude === 'number'
+        ? localGps.longitude
+        : null;
+    const latLngStr =
+      latVal !== null && lngVal !== null
+        ? `${latVal.toFixed(5)}, ${lngVal.toFixed(5)}`
+        : '';
+    const locationStr = localGps?.regionLabel || '';
 
-        if (typeof localParticipant.setMetadata === 'function') {
+    const metadataPayload = JSON.stringify({
+      callsign: participantName,
+      lat: latVal,
+      lng: lngVal,
+      lon: lngVal,
+      latLng: latLngStr,
+      dms: localGps?.dms || '',
+      location: locationStr,
+      region: locationStr,
+    });
+
+    const syncMetadataAndName = async () => {
+      try {
+        if (
+          typeof localParticipant.setMetadata === 'function' &&
+          localParticipant.metadata !== metadataPayload
+        ) {
           await localParticipant.setMetadata(metadataPayload);
+        }
+
+        if (
+          typeof localParticipant.setName === 'function' &&
+          localParticipant.name !== participantName
+        ) {
+          await localParticipant.setName(participantName);
         }
       } catch (err) {
         console.warn('Sinkronisasi metadata GPS LiveKit tertunda:', err);
       }
     };
 
-    syncGpsToLiveKit();
+    syncMetadataAndName();
   }, [
     localParticipant,
     connectionState,
     participantName,
     localGps?.available,
-    localGps?.dms,
-    localGps?.regionLabel,
     localGps?.latitude,
     localGps?.longitude,
+    localGps?.dms,
+    localGps?.regionLabel,
   ]);
 
   // Sinkronisasi Mode Hemat Bandwidth ke track kamera & video remote
@@ -1057,6 +1408,9 @@ function InCallWorkspace({
 
   return (
     <div className="flex flex-col h-full w-full overflow-hidden">
+      {/* Renderer Audio Seluruh Peserta Room */}
+      <RoomAudioRenderer />
+
       {/* 1. HEADER ATAS DENGAN LOGO TNI AU & INDIKATOR JARINGAN/GPS */}
       <LiveKitHeaderHUD
         roomName={roomName}
@@ -1066,74 +1420,36 @@ function InCallWorkspace({
         onOpenQrModal={onOpenQrModal}
       />
 
-      {/* 2. BAR INFORMASI POSISI KOORDINAT GPS & LOKASI PERSONEL (DI LUAR AREA LAYAR VIDEO AGAR TIDAK MENUTUPI VIDEO) */}
-      <div className="shrink-0 bg-slate-950/95 border-b border-sky-300/25 px-3 py-1.5 sm:px-5 flex items-center justify-between gap-3 z-30">
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-0.5 flex-1 min-w-0">
-          <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-blue-950 border border-sky-300/40 text-[10px] font-bold text-sky-300 uppercase tracking-wider shrink-0">
-            <MapPin className="w-3 h-3 text-cyan-300 shrink-0" />
-            <span>POSISI GPS:</span>
-          </span>
-
-          {participants.map((p) => {
-            const metaGps = parseParticipantGpsMetadata(p);
-            const dms = p.isLocal ? localGps?.dms || metaGps?.dms : metaGps?.dms;
-            const region = p.isLocal
-              ? localGps?.regionLabel || metaGps?.region
-              : metaGps?.region;
-            const callsign = metaGps?.callsign || p.identity;
-
-            return (
-              <ParticipantContextIfNeeded key={p.identity} participant={p}>
-                <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-900/95 border border-sky-300/30 text-[10px] text-sky-100 shrink-0">
-                  <span className="font-bold text-sky-300 uppercase">
-                    {callsign} {p.isLocal ? '(ANDA)' : ''}:
-                  </span>
-                  {dms ? (
-                    <div className="flex items-center gap-1.5 font-mono">
-                      <span className="text-cyan-300 font-semibold inline-flex items-center gap-1">
-                        <Navigation className="w-2.5 h-2.5 text-cyan-300 shrink-0" />
-                        {dms}
-                      </span>
-                      {region && (
-                        <span className="text-sky-200/90 border-l border-sky-300/30 pl-1.5">
-                          {region}
-                        </span>
-                      )}
-                    </div>
-                  ) : (
-                    <span className="text-slate-400 italic">
-                      {p.isLocal ? localGps?.status : 'Menunggu GPS...'}
-                    </span>
-                  )}
-                </div>
-              </ParticipantContextIfNeeded>
-            );
-          })}
-        </div>
-
-        {/* Tombol Pindah Kamera Depan/Belakang di Bar Luar Layar Video */}
-        <button
-          type="button"
-          onClick={handleSwitchCamera}
-          disabled={isSwitchingCamera}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-950 hover:bg-blue-900 active:scale-95 border border-sky-300/50 text-sky-200 text-[10px] font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 disabled:opacity-50"
-          title="Pindah Kamera Depan / Belakang (room.switchActiveDevice)"
+      {/* 2. AREA TENGAH: <GridLayout /> (2 Kolom x 3 Baris min-h-[130px] di Mobile) + <CustomParticipantTile /> */}
+      <div className="flex-1 min-h-0 w-full relative overflow-hidden bg-slate-900 p-1.5 sm:p-2.5">
+        <GridLayout
+          tracks={tracks}
+          className="tactical-mobile-grid !h-full !w-full max-md:!grid max-md:!grid-cols-2 max-md:!grid-rows-3 gap-1.5 sm:gap-2.5"
         >
-          <SwitchCamera
-            className={`w-3.5 h-3.5 text-cyan-300 shrink-0 ${
-              isSwitchingCamera ? 'animate-spin' : ''
-            }`}
+          <CustomParticipantTile
+            localGps={localGps}
+            localCallsign={participantName}
           />
-          <span className="hidden sm:inline">
-            KAMERA ({cameraFacingMode === 'user' ? 'DEPAN' : 'BELAKANG'})
-          </span>
-        </button>
-      </div>
+        </GridLayout>
 
-      {/* 3. AREA TENGAH: LAYAR VIDEO BERSIH TANPA TERTUTUP PANEL KOORDINAT */}
-      <div className="flex-1 min-h-0 w-full relative overflow-hidden bg-slate-900">
-        {/* Komponen <VideoConference /> bawaan LiveKit */}
-        <VideoConference />
+        {/* Watermark Taktis Transparan di Belakang */}
+        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-between p-3 overflow-hidden">
+          <div className="flex items-start justify-end">
+            <div className="text-[9px] sm:text-[10px] font-bold tracking-widest text-sky-300/75 uppercase drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)]">
+              CONFIDENTIAL - DISKOMLEKAU · {roomName}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-center my-auto">
+            <div className="text-center opacity-10 select-none">
+              <p className="text-sm sm:text-xl md:text-2xl font-extrabold tracking-[0.28em] text-sky-300 uppercase">
+                CONFIDENTIAL - DISKOMLEKAU
+              </p>
+            </div>
+          </div>
+
+          <div />
+        </div>
 
         <RealTimeChatOverlay
           isOpen={isChatOpen}
@@ -1147,29 +1463,50 @@ function InCallWorkspace({
           onClose={() => setShowParticipantsModal(false)}
           roomName={roomName}
           localGps={localGps}
+          localCallsign={participantName}
+        />
+
+        <ChangeCallsignModal
+          isOpen={showChangeNameModal}
+          onClose={() => setShowChangeNameModal(false)}
+          currentName={participantName}
+          localGps={localGps}
+          onSuccessUpdateName={onUpdateParticipantName}
         />
       </div>
 
       {/* 3. CUSTOM TACTICAL CONTROL BAR */}
-      <div className="shrink-0 bg-blue-950/95 border-t border-sky-300/35 px-2.5 py-2 sm:px-5 flex items-center justify-between gap-2 z-30">
-        <div className="hidden xl:flex items-center gap-2 text-xs text-sky-200">
+      <div className="shrink-0 bg-blue-950/95 border-t border-sky-300/35 px-2 py-2 sm:px-4 flex items-center justify-between gap-2 z-30">
+        <div className="hidden xl:flex items-center gap-2 text-xs text-sky-200 shrink-0">
           <span className="px-2.5 py-1 rounded-md bg-slate-900/90 border border-sky-300/30">
             ROOM: <strong className="text-sky-300">{roomName}</strong>
           </span>
-          {localGps?.available && localGps.dms && (
-            <span className="px-2.5 py-1 rounded-md bg-slate-900/90 border border-sky-300/30 font-mono text-[11px] text-cyan-300">
-              {localGps.dms}
-              {localGps.regionLabel ? ` — ${localGps.regionLabel}` : ''}
-            </span>
-          )}
         </div>
 
-        <div className="flex items-center justify-between xl:justify-end gap-1.5 sm:gap-2 w-full xl:w-auto overflow-x-auto no-scrollbar">
-          {/* KOMPONEN RESMI <TrackToggle source={Track.Source.ScreenShare} /> DARI LIVEKIT */}
+        <div className="flex items-center justify-start sm:justify-center xl:justify-end gap-1.5 sm:gap-2 w-full xl:w-auto overflow-x-auto no-scrollbar">
+          {/* TOMBOL MIC ON/OFF */}
+          <TrackToggle
+            source={Track.Source.Microphone}
+            showIcon={true}
+            className="flex items-center justify-center gap-1 !px-2.5 !py-2 !rounded-lg !border !border-sky-300/45 !bg-slate-900 hover:!bg-slate-800 !text-sky-200 !text-[10px] sm:!text-xs !font-bold !tracking-wider !uppercase transition-all cursor-pointer shrink-0"
+          >
+            <span className="hidden md:inline">MIC</span>
+          </TrackToggle>
+
+          {/* TOMBOL KAMERA ON/OFF */}
+          <TrackToggle
+            source={Track.Source.Camera}
+            showIcon={true}
+            className="flex items-center justify-center gap-1 !px-2.5 !py-2 !rounded-lg !border !border-sky-300/45 !bg-slate-900 hover:!bg-slate-800 !text-sky-200 !text-[10px] sm:!text-xs !font-bold !tracking-wider !uppercase transition-all cursor-pointer shrink-0"
+          >
+            <span className="hidden md:inline">CAM</span>
+          </TrackToggle>
+
+          {/* TOMBOL SHARE SCREEN */}
           <TrackToggle
             source={Track.Source.ScreenShare}
             showIcon={true}
-            className="lk-custom-screenshare-toggle flex items-center justify-center gap-1.5 !px-2.5 !py-2 sm:!px-3.5 !rounded-lg !border !border-sky-300/45 !bg-slate-900 hover:!bg-slate-800 !text-sky-300 !text-[10px] sm:!text-xs !font-bold !tracking-wider !uppercase transition-all cursor-pointer shrink-0"
+            className="lk-custom-screenshare-toggle flex items-center justify-center gap-1.5 !px-2.5 !py-2 sm:!px-3 !rounded-lg !border !border-sky-300/45 !bg-slate-900 hover:!bg-slate-800 !text-sky-300 !text-[10px] sm:!text-xs !font-bold !tracking-wider !uppercase transition-all cursor-pointer shrink-0"
           >
             <span>SHARE SCREEN</span>
           </TrackToggle>
@@ -1179,7 +1516,7 @@ function InCallWorkspace({
             type="button"
             onClick={handleSwitchCamera}
             disabled={isSwitchingCamera}
-            className="flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3.5 rounded-lg border border-cyan-300/50 bg-slate-900 hover:bg-slate-800 text-cyan-300 text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 disabled:opacity-50"
+            className="flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3 rounded-lg border border-cyan-300/50 bg-slate-900 hover:bg-slate-800 text-cyan-300 text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 disabled:opacity-50"
             title="Tukar Kamera Depan (User) / Belakang (Environment)"
           >
             <SwitchCamera
@@ -1188,11 +1525,22 @@ function InCallWorkspace({
             <span>PINDAH KAMERA</span>
           </button>
 
+          {/* 3. TOMBOL UBAH SANDI/NAMA SAAT RAPAT (IN-CALL) */}
+          <button
+            type="button"
+            onClick={() => setShowChangeNameModal(true)}
+            className="flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3 rounded-lg border border-sky-300/55 bg-sky-400/15 hover:bg-sky-400/25 text-sky-200 text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0"
+            title="Ubah Callsign / Nama Personel Saat Rapat Berlangsung"
+          >
+            <Edit3 className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
+            <span>UBAH SANDI/NAMA</span>
+          </button>
+
           {/* TOMBOL CHAT REAL-TIME */}
           <button
             type="button"
             onClick={() => setIsChatOpen((prev) => !prev)}
-            className={`relative flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3.5 rounded-lg border text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 ${
+            className={`relative flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3 rounded-lg border text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 ${
               isChatOpen
                 ? 'bg-sky-300 text-slate-950 border-sky-200 shadow-[0_0_16px_rgba(125,211,252,0.45)]'
                 : 'bg-slate-900 hover:bg-slate-800 text-sky-300 border-sky-300/45'
@@ -1212,7 +1560,7 @@ function InCallWorkspace({
           <button
             type="button"
             onClick={() => setShowParticipantsModal(true)}
-            className="flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3.5 rounded-lg border border-sky-300/40 bg-slate-900 hover:bg-slate-800 text-sky-200 text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-colors cursor-pointer shrink-0"
+            className="flex items-center justify-center gap-1.5 px-2.5 py-2 sm:px-3 rounded-lg border border-sky-300/40 bg-slate-900 hover:bg-slate-800 text-sky-200 text-[10px] sm:text-xs font-bold tracking-wider uppercase transition-colors cursor-pointer shrink-0"
           >
             <Users className="w-4 h-4 text-sky-300 shrink-0" />
             <span>PERSONEL ({participants.length})</span>
@@ -1222,7 +1570,7 @@ function InCallWorkspace({
           <button
             type="button"
             onClick={() => onToggleLowBandwidth(!lowBandwidthMode)}
-            className={`hidden sm:flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 ${
+            className={`hidden sm:flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg border text-xs font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 ${
               lowBandwidthMode
                 ? 'bg-amber-400 text-slate-950 border-amber-200'
                 : 'bg-slate-900 hover:bg-slate-800 text-sky-200 border-sky-300/40'
@@ -1261,7 +1609,7 @@ function InCallWorkspace({
 export default function App() {
   const [appState, setAppState] = useState('LOBBY');
 
-  // SETTING DEFAULT LOBBY: Callsign = "ANU", Room = "yes", Sandi = "yes"
+  // 1. KOSONGKAN CALLSIGN DI AWAL (LOGIN): Default callsign adalah "" (string kosong)
   const [participantName, setParticipantName] = useState(DEFAULT_CALLSIGN);
   const [roomName, setRoomName] = useState(DEFAULT_ROOM_NAME);
   const [sandi, setSandi] = useState(DEFAULT_SANDI);
@@ -1280,7 +1628,7 @@ export default function App() {
   const [showQrModal, setShowQrModal] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
-  // Hook Geolocation GPS + Provinsi/Kabupaten/Kecamatan (Tanpa Map)
+  // Hook Geolocation GPS + Reverse Geocoding Nominatim OpenStreetMap
   const localGps = useTacticalGpsLocation();
 
   const cleanRoomParam = (roomName || DEFAULT_ROOM_NAME).trim();
@@ -1303,15 +1651,45 @@ export default function App() {
       const finalCallsign = String(targetCallsign || '').trim();
       const finalSandi = String(targetSandi ?? '').trim();
 
-      if (!finalRoom || !finalCallsign) {
-        setErrorMsg('Harap isi Callsign dan Nama Room Operasi terlebih dahulu.');
+      if (!finalCallsign) {
+        setErrorMsg('Callsign / NRP Personel wajib diisi sebelum bergabung.');
+        return false;
+      }
+
+      if (!finalRoom) {
+        setErrorMsg('Nama Room / Operasi wajib diisi.');
         return false;
       }
 
       if (!finalSandi) {
-        setErrorMsg('Harap isi Sandi Operasi terlebih dahulu.');
+        setErrorMsg('Sandi Gabung operasi wajib diisi.');
         return false;
       }
+
+      const latVal =
+        localGps?.available && typeof localGps.latitude === 'number'
+          ? localGps.latitude
+          : null;
+      const lngVal =
+        localGps?.available && typeof localGps.longitude === 'number'
+          ? localGps.longitude
+          : null;
+      const latLngStr =
+        latVal !== null && lngVal !== null
+          ? `${latVal.toFixed(5)}, ${lngVal.toFixed(5)}`
+          : '';
+      const locationStr = localGps?.regionLabel || '';
+
+      const initialMetadata = JSON.stringify({
+        callsign: finalCallsign,
+        lat: latVal,
+        lng: lngVal,
+        lon: lngVal,
+        latLng: latLngStr,
+        dms: localGps?.dms || '',
+        location: locationStr,
+        region: locationStr,
+      });
 
       setIsLoading(true);
       try {
@@ -1321,6 +1699,8 @@ export default function App() {
           body: JSON.stringify({
             roomName: finalRoom,
             participantName: finalCallsign,
+            displayName: finalCallsign,
+            metadata: initialMetadata,
             sandi: finalSandi,
             pwd: finalSandi,
           }),
@@ -1358,7 +1738,14 @@ export default function App() {
         setIsDeepLinkJoining(false);
       }
     },
-    [customServerUrl]
+    [
+      customServerUrl,
+      localGps?.available,
+      localGps?.latitude,
+      localGps?.longitude,
+      localGps?.dms,
+      localGps?.regionLabel,
+    ]
   );
 
   // Deteksi Deep Link Join via URLSearchParams (?room=yes&sandi=yes)
@@ -1385,6 +1772,7 @@ export default function App() {
 
   const handleJoinSubmit = async (e) => {
     e.preventDefault();
+    if (!participantName.trim()) return;
     await requestTokenAndJoin(roomName, participantName, sandi);
   };
 
@@ -1407,8 +1795,10 @@ export default function App() {
     }
   };
 
+  const isCallsignEmpty = !participantName.trim();
+
   return (
-    /* PEMBUNGKUS UTAMA: FULL SCREEN FIT TANPA SCROLLBAR */
+    /* PEMBUNGKUS UTAMA: TEMA ELEGANT LIGHT BLUE & FULL SCREEN FIT TANPA SCROLLBAR */
     <div
       className={`flex flex-col h-[100dvh] w-full overflow-hidden font-mono bg-slate-900 text-sky-300 select-none ${
         lowBandwidthMode ? 'low-bandwidth-active' : ''
@@ -1434,7 +1824,7 @@ export default function App() {
 
       {!isDeepLinkJoining && appState === 'LOBBY' && (
         <>
-          {/* Header Lobby: Logo DISKOMLEKAU + Tulisan TACTICAL VIDCOMM DISKOMLEKAU + Logo TNI AU di Sebelah Kanan & Pojok Kanan Atas */}
+          {/* Header Lobby: Logo DISKOMLEKAU + Tulisan TACTICAL VIDCOMM DISKOMLEKAU + Logo TNI AU */}
           <header className="shrink-0 bg-blue-950/95 border-b border-sky-300/30 px-4 py-2.5 sm:px-6 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
               <TacticalRadarLogo className="w-9 h-9 shrink-0" />
@@ -1443,7 +1833,6 @@ export default function App() {
                   <h1 className="text-xs sm:text-base md:text-lg font-bold tracking-wider text-sky-300 truncate">
                     TACTICAL VIDCOMM DISKOMLEKAU
                   </h1>
-                  {/* Logo TNI AU di sebelah kanan atas tulisan TACTICAL VIDCOMM DISKOMLEKAU */}
                   <TniAuLogo className="w-9 h-9 shrink-0" />
                 </div>
                 <p className="text-[10px] sm:text-xs text-blue-400 tracking-widest truncate">
@@ -1498,42 +1887,46 @@ export default function App() {
                 <div className="min-w-0 flex-1 text-xs">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-sky-300">
-                      POSISI GPS PERSONEL (TANPA MAP)
+                      TELEMETRI GPS HUD (TANPA MAP)
                     </span>
                     <span className="text-[10px] text-cyan-300 font-semibold">
                       {localGps.available ? 'GPS AKTIF' : localGps.status}
                     </span>
                   </div>
-                  {localGps.available && localGps.dms ? (
+                  {localGps.available && localGps.latLngText ? (
                     <div className="mt-1 space-y-0.5">
-                      <p className="font-mono font-bold text-cyan-300 text-xs sm:text-sm">
-                        {localGps.dms}
+                      <p className="font-mono font-bold text-cyan-300 text-xs">
+                        {localGps.latLngText} ({localGps.dms})
                       </p>
                       {localGps.regionLabel ? (
-                        <p className="text-[11px] text-sky-200">
-                          {localGps.regionLabel}
-                        </p>
+                        <p className="text-[11px] text-sky-200">{localGps.regionLabel}</p>
                       ) : (
                         <p className="text-[10px] text-slate-400">
-                          Mendeteksi Kecamatan / Kabupaten / Provinsi...
+                          Mendeteksi lokasi via Nominatim OpenStreetMap...
                         </p>
                       )}
                     </div>
                   ) : (
                     <p className="text-[11px] text-slate-400 mt-0.5">
-                      Izinkan akses lokasi browser untuk menampilkan koordinat DMS & wilayah administratif.
+                      Izinkan akses lokasi untuk menampilkan [CALLSIGN] | [LAT, LNG] | [LOKASI] pada HUD video.
                     </p>
                   )}
                 </div>
               </div>
 
               <form onSubmit={handleJoinSubmit} className="space-y-3.5">
+                {/* 1. INPUT CALLSIGN KOSONG DI AWAL TANPA PLACEHOLDER NAMA */}
                 <div>
                   <label
                     htmlFor="callsign-input"
-                    className="block text-xs font-bold uppercase tracking-wider text-sky-300 mb-1"
+                    className="block text-xs font-bold uppercase tracking-wider text-sky-300 mb-1 flex items-center justify-between"
                   >
-                    CALLSIGN / NRP PERSONEL
+                    <span>CALLSIGN / NRP PERSONEL</span>
+                    {isCallsignEmpty && (
+                      <span className="text-[10px] text-amber-300 font-semibold">
+                        * WAJIB DIISI
+                      </span>
+                    )}
                   </label>
                   <input
                     id="callsign-input"
@@ -1541,9 +1934,8 @@ export default function App() {
                     required
                     value={participantName}
                     onChange={(e) => setParticipantName(e.target.value)}
-                    placeholder="ANU"
                     autoComplete="off"
-                    className="w-full px-3.5 py-2.5 text-sm font-bold tracking-wider bg-blue-950/80 border border-sky-300/45 rounded-lg text-sky-200 placeholder-slate-500 focus:outline-none focus:border-cyan-300"
+                    className="w-full px-3.5 py-2.5 text-sm font-bold tracking-wider bg-blue-950/80 border border-sky-300/45 rounded-lg text-sky-200 focus:outline-none focus:border-cyan-300"
                   />
                 </div>
 
@@ -1561,9 +1953,8 @@ export default function App() {
                       required
                       value={roomName}
                       onChange={(e) => setRoomName(e.target.value)}
-                      placeholder="yes"
                       autoComplete="off"
-                      className="w-full px-3.5 py-2.5 text-sm font-bold tracking-wider bg-blue-950/80 border border-sky-300/45 rounded-lg text-cyan-300 placeholder-slate-500 focus:outline-none focus:border-cyan-300"
+                      className="w-full px-3.5 py-2.5 text-sm font-bold tracking-wider bg-blue-950/80 border border-sky-300/45 rounded-lg text-cyan-300 focus:outline-none focus:border-cyan-300"
                     />
                   </div>
 
@@ -1583,9 +1974,8 @@ export default function App() {
                         required
                         value={sandi}
                         onChange={(e) => setSandi(e.target.value)}
-                        placeholder="yes"
                         autoComplete="off"
-                        className="w-full pl-9 pr-3.5 py-2.5 text-sm font-bold tracking-wider bg-blue-950/80 border border-sky-300/45 rounded-lg text-sky-200 placeholder-slate-500 focus:outline-none focus:border-cyan-300"
+                        className="w-full pl-9 pr-3.5 py-2.5 text-sm font-bold tracking-wider bg-blue-950/80 border border-sky-300/45 rounded-lg text-sky-200 focus:outline-none focus:border-cyan-300"
                       />
                     </div>
                   </div>
@@ -1638,12 +2028,13 @@ export default function App() {
                 )}
 
                 <div className="pt-2 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {/* TOMBOL GABUNG DISABLED JIKA CALLSIGN MASIH KOSONG */}
                   <button
                     type="submit"
-                    disabled={isLoading}
-                    className="w-full py-3 px-4 rounded-xl font-bold text-xs tracking-wider uppercase bg-sky-400 hover:bg-sky-300 text-slate-950 border border-cyan-300 shadow-[0_0_20px_rgba(56,189,248,0.3)] transition-all cursor-pointer disabled:opacity-50"
+                    disabled={isLoading || isCallsignEmpty}
+                    className="w-full py-3 px-4 rounded-xl font-bold text-xs tracking-wider uppercase bg-sky-400 hover:bg-sky-300 text-slate-950 border border-cyan-300 shadow-[0_0_20px_rgba(56,189,248,0.3)] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
                   >
-                    {isLoading ? 'MENGHUBUNGKAN...' : 'GABUNG RAPAT VTC'}
+                    {isLoading ? 'MENGHUBUNGKAN...' : 'GABUNG'}
                   </button>
 
                   <button
@@ -1660,7 +2051,7 @@ export default function App() {
               <div className="mt-4 pt-3 border-t border-sky-300/20 flex items-center justify-between text-[10px] sm:text-[11px] text-blue-400">
                 <span className="inline-flex items-center gap-1.5 text-sky-300 font-semibold">
                   <Lock className="w-3.5 h-3.5 text-cyan-300" />
-                  END-TO-END WEBRTC · GPS TELEMETRY
+                  END-TO-END WEBRTC · GPS TELEMETRY HUD
                 </span>
                 <span>DISKOMLEKAU · TNI AU</span>
               </div>
@@ -1687,6 +2078,7 @@ export default function App() {
           <InCallWorkspace
             roomName={roomName}
             participantName={participantName}
+            onUpdateParticipantName={setParticipantName}
             lowBandwidthMode={lowBandwidthMode}
             localGps={localGps}
             onToggleLowBandwidth={setLowBandwidthMode}

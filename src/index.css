@@ -48,16 +48,41 @@
 .lk-grid-layout {
   height: 100% !important;
   width: 100% !important;
-  gap: 10px !important;
+  gap: 8px !important;
   overflow: hidden !important;
 }
 
+/* Penyesuaian Grid 6 Client di Mobile (max-width: 768px): 2 Kolom x 3 Baris */
+@media (max-width: 768px) {
+  .lk-grid-layout,
+  .tactical-mobile-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    grid-template-rows: repeat(3, minmax(130px, 1fr)) !important;
+    gap: 6px !important;
+    padding: 6px !important;
+    height: 100% !important;
+    width: 100% !important;
+    overflow-y: auto !important;
+  }
+
+  .lk-grid-layout .lk-participant-tile,
+  .tactical-mobile-grid .lk-participant-tile,
+  .tactical-tile-container {
+    min-height: 130px !important;
+    height: 100% !important;
+    width: 100% !important;
+  }
+}
+
 .lk-participant-tile {
-  border: 1px solid rgba(125, 211, 252, 0.3) !important;
+  border: 1px solid rgba(125, 211, 252, 0.35) !important;
   border-radius: 10px !important;
   background-color: #0f1d36 !important;
   overflow: hidden !important;
   position: relative !important;
+  height: 100% !important;
+  width: 100% !important;
   box-shadow: 0 4px 20px rgba(2, 132, 199, 0.08) !important;
   transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
 }
@@ -72,28 +97,9 @@
   color: #7dd3fc !important;
 }
 
-.lk-participant-metadata {
-  background: rgba(15, 23, 42, 0.88) !important;
-  backdrop-filter: blur(8px) !important;
-  border: 1px solid rgba(125, 211, 252, 0.35) !important;
-  border-radius: 6px !important;
-  padding: 4px 10px !important;
-  bottom: 8px !important;
-  left: 8px !important;
-  right: 8px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: space-between !important;
-}
-
-.lk-participant-name {
-  font-family: 'JetBrains Mono', monospace !important;
-  font-size: 0.7rem !important;
-  font-weight: 600 !important;
-  letter-spacing: 0.03em !important;
-  color: #e0f2fe !important;
-  white-space: pre-line !important;
-  line-height: 1.35 !important;
+/* Sembunyikan metadata bawaan LiveKit di dalam CustomParticipantTile karena kita merender HUD Overlay Taktis sendiri */
+.tactical-tile-container .lk-participant-metadata {
+  display: none !important;
 }
 
 /* Styling <ConnectionQualityIndicator /> asli dari @livekit/components-react */
@@ -103,7 +109,7 @@
   justify-content: center !important;
   padding: 2px 5px !important;
   border-radius: 4px !important;
-  background: rgba(15, 23, 42, 0.85) !important;
+  background: transparent !important;
 }
 
 .lk-connection-quality[data-lk-quality="excellent"],

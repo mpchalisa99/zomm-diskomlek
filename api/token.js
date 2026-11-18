@@ -25,7 +25,7 @@ export default async function handler(req, res) {
 
   try {
     const source = req.method === 'GET' ? req.query : req.body || {};
-    const { roomName, participantName, sandi, pwd } = source;
+    const { roomName, participantName, displayName, metadata, sandi, pwd } = source;
 
     if (!roomName || !participantName) {
       return res.status(400).json({
@@ -63,10 +63,13 @@ export default async function handler(req, res) {
 
     const cleanRoom = String(roomName).trim();
     const cleanIdentity = String(participantName).trim();
+    const initialName = displayName ? String(displayName).trim() : cleanIdentity;
+    const initialMetadata = metadata ? String(metadata) : undefined;
 
     const at = new AccessToken(apiKey, apiSecret, {
       identity: cleanIdentity,
-      name: cleanIdentity,
+      name: initialName,
+      metadata: initialMetadata,
       ttl: '6h',
     });
 
